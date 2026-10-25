@@ -1,0 +1,36 @@
+import { defineRpc } from "@getpaseo/plugin";
+import { z } from "zod";
+import { issueSchema, projectSchema, providerSchema, sessionSchema } from "./models";
+import { milestoneSchema } from "./config";
+import { diagnosticsSchema, executionPlanSchema, executionReviewSchema, queuePreviewSchema, readinessSchema, rerunPreviewSchema, rerunRequestSchema, rerunResultSchema, runtimeSchema } from "./experience";
+const empty = z.object({});
+const ok = z.object({ ok: z.boolean(), message: z.string() });
+export const statusRpc = defineRpc({ name: "integration.status", input: empty, output: z.object({ state: z.string(), message: z.string(), credentialPresent: z.boolean(), mcpCredentialPresent: z.boolean(), passwordPresent: z.boolean(), requestCredentialPresent: z.boolean(), runtime: runtimeSchema, requests: z.array(rerunRequestSchema.omit({ body: true, planDigest: true, serverUrl: true })), sessions: z.array(sessionSchema.omit({ task: true })), dataDirectory: z.string() }) });
+export const credentialsRpc = defineRpc({ name: "integration.credentials", input: z.object({ apiKey: z.string().optional(), mcpToken: z.string().optional(), paseoPassword: z.string().optional(), requestApiKey: z.string().optional() }), output: ok });
+export const testConnectionRpc = defineRpc({ name: "integration.test", input: empty, output: ok });
+export const hostRpc = defineRpc({ name: "integration.host", input: empty, output: z.discriminatedUnion("status", [
+  z.object({ status: z.literal("detected"), endpoint: z.string(), serverId: z.string() }),
+  z.object({ status: z.literal("unavailable"), message: z.string() }),
+]) });
+export const testHostRpc = defineRpc({ name: "integration.host.test", input: empty, output: ok });
+export const providersRpc = defineRpc({ name: "integration.providers", input: z.object({ cwd: z.string().optional() }), output: z.array(providerSchema) });
+export const projectsRpc = defineRpc({ name: "issues.projects", input: empty, output: z.array(projectSchema) });
+export const searchRpc = defineRpc({ name: "issues.search", input: z.object({ projectId: z.number().int().positive(), query: z.string().max(300).default("") }), output: z.array(issueSchema) });
+export const detailRpc = defineRpc({ name: "issues.detail", input: z.object({ issueId: z.number().int().positive() }), output: issueSchema });
+export const startRpc = defineRpc({ name: "issues.start", input: z.object({ issueId: z.number().int().positive(), provider: z.string().optional(), model: z.string().optional(), modeId: z.string().optional() }), output: sessionSchema.omit({ task: true }) });
+export const attachRpc = defineRpc({ name: "issues.attach", input: z.object({ issueId: z.number().int().positive(), agentId: z.string().min(1) }), output: sessionSchema.omit({ task: true }) });
+export const cancelRpc = defineRpc({ name: "execution.cancel", input: z.object({ key: z.string() }), output: ok });
+export const milestoneRpc = defineRpc({ name: "issues.milestone", input: z.object({ key: z.string(), milestone: milestoneSchema, evidence: z.string().min(1).max(10000) }), output: ok });
+export const readinessRpc = defineRpc({ name: "integration.readiness", input: empty, output: readinessSchema });
+export const planRpc = defineRpc({ name: "execution.plan", input: z.object({ issueId: z.number().int().positive(), provider: z.string().optional(), model: z.string().optional(), modeId: z.string().optional() }), output: executionPlanSchema });
+export const queueRpc = defineRpc({ name: "integration.queue", input: empty, output: queuePreviewSchema });
+export const controlRpc = defineRpc({ name: "execution.control", input: z.object({ action: z.enum(["pause", "resume", "stop"]) }), output: z.object({ ok: z.boolean(), message: z.string(), runtime: runtimeSchema }) });
+export const rerunPreviewRpc = defineRpc({ name: "execution.rerun.preview", input: z.object({ key: z.string(), operation: z.enum(["rerun", "smoke"]) }), output: rerunPreviewSchema });
+export const rerunSubmitRpc = defineRpc({ name: "execution.rerun.submit", input: z.object({ requestId: z.string().uuid(), planDigest: z.string() }), output: rerunResultSchema });
+export const rerunReconcileRpc = defineRpc({ name: "execution.rerun.reconcile", input: z.object({ requestId: z.string().uuid() }), output: rerunResultSchema });
+export const rerunDiscardRpc = defineRpc({ name: "execution.rerun.discard", input: z.object({ requestId: z.string().uuid() }), output: rerunResultSchema });
+export const diagnosticsRpc = defineRpc({ name: "integration.diagnostics", input: empty, output: diagnosticsSchema });
+export const reviewRpc = defineRpc({ name: "execution.review", input: z.object({ key: z.string() }), output: executionReviewSchema });
+export const markReviewedRpc = defineRpc({ name: "execution.review.mark", input: z.object({ key: z.string(), fingerprint: z.string() }), output: executionReviewSchema });
+export const smokePreviewRpc = defineRpc({ name: "execution.smoke.preview", input: z.object({ issueId: z.number().int().positive() }), output: rerunPreviewSchema });
+export const recoverHandoffRpc = defineRpc({ name: "execution.rerun.recover", input: z.object({ requestId: z.string().uuid() }), output: rerunResultSchema.extend({ comment: z.string(), issueId: z.number().int().positive(), projectId: z.string() }) });
