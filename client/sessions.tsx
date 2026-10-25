@@ -3,7 +3,7 @@ import { openExternalUrl, useRpc, type PluginSurfaceProps } from "@getpaseo/plug
 import { Modal, SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { cancelRpc, controlRpc, milestoneRpc, rerunDiscardRpc, rerunReconcileRpc, statusRpc } from "../shared/rpc";
 import { milestoneSchema, type Milestone } from "../shared/config";
-import type { SessionRecord } from "../shared/models";
+import type { PublicSession } from "../shared/models";
 import type { RerunRequest } from "../shared/experience";
 import { Feedback, issueUrl, RefreshButton, useAction, useResource } from "./common";
 import { ExecutionPlanDetails } from "./experience";
@@ -12,8 +12,7 @@ import { DiagnosticsPreview } from "./diagnostics";
 import { HistoricalReview } from "./review";
 import { NavigationRow } from "./navigation";
 
-type PublicSession = Omit<SessionRecord, "task">;
-type PublicRequest = Omit<RerunRequest, "body" | "planDigest" | "serverUrl">;
+type PublicRequest = Omit<RerunRequest, "body" | "planDigest" | "serverUrl" | "continuation" | "continuationScope">;
 export type ExecutionPage = "overview" | "attention" | "history" | "requests" | "controls" | "session";
 type SessionsProps = PluginSurfaceProps & {
   webUrl: string;

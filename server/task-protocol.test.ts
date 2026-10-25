@@ -3,6 +3,7 @@ import { Client, RequestError } from "./protocol";
 import { requestComment, smokeComment, smokeOutput, taskPrompt } from "./task";
 import type { Run } from "../shared/models";
 import type { RerunRequest } from "../shared/experience";
+import { ConfigurationError } from "./errors";
 
 const now = "2026-10-25T00:00:00.000Z";
 const project = { id: 7, teamId: 1, key: "TW", name: "Token Watch", ref: "dev.TW" };
@@ -153,4 +154,36 @@ test("a canonical issue marker cannot cross scope, change actor, or bind a secon
   const delegated = planner([row(17, { prompt: request.body, trigger: "delegation" })]).client;
   await expect(delegated.intent({ ...claimed, trigger: "delegation" }, issue, undefined, () => request)).rejects.toThrow("matching durable handed-off request");
   expect((await client.intent(claimed, issue, undefined, () => ({ ...request, state: "submitted", runId: 17 }))).source).toBe("smoke");
+});
+
+function expiredContinuation(): RerunRequest {
+  const id = "2833406f-a999-44db-aea3-48d722352e68";
+  const hash = "a".repeat(64);
+  return {
+    id, sourceKey: "run-16", source: { kind: "run" }, executionActorId: "bot-user",
+    serverUrl: "https://plan.test", issueId: 91, projectId: "7", operation: "continue",
+    state: "submitted", createdAt: 1, updatedAt: 1, commentId: 1, runId: 17,
+    body: requestComment("dev-bot", id, 16, "continue"), planDigest: hash, delivery: "browser",
+    continuation: {
+      requestId: id, sourceKey: "run-16", sourceAgentId: "native-16", sourceDigest: hash,
+      taskDigest: hash, systemDigest: hash, requirementsDigest: hash, configDigest: hash,
+      executionActorId: "bot-user", approvedAt: 1, expiresAt: 2, attestation: "same-task-unrestricted",
+    },
+  };
+}
+
+test("expired continuation cannot dispatch but does not poison a later fresh rerun", async () => {
+  const approved = expiredContinuation();
+  const original = row(16, { prompt: "Implement the requested parser change", status: "success", executionState: "success" });
+  const direct = planner([row(17, { prompt: approved.body }), original]).client;
+  await expect(direct.intent(claimed, issue, undefined, () => approved)).rejects.toBeInstanceOf(ConfigurationError);
+  const requestId = "9b6fdf0f-f40c-48e9-b815-67d082be727d";
+  const body = requestComment("dev-bot", requestId, 17, "rerun");
+  const historical = row(17, { prompt: approved.body, status: "success", executionState: "success" });
+  const { client } = planner([row(18, { prompt: body }), historical, original]);
+  const resolved = await client.intent({ ...claimed, id: 18 }, issue, undefined, (id) => id === approved.id ? approved : undefined);
+  expect(resolved).toMatchObject({ source: "comment", sourceRunId: 16, requestId, request: "Implement the requested parser change" });
+  for (const invalid of [{ ...approved, body: approved.body + "\\nChanged" }, { ...approved, executionActorId: "different-bot" }]) {
+    await expect(client.intent({ ...claimed, id: 18 }, issue, undefined, () => invalid)).rejects.toBeInstanceOf(ConfigurationError);
+  }
 });

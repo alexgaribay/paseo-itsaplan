@@ -8,7 +8,7 @@ export interface DiagnosticsStatus {
   mcpCredentialPresent: boolean;
   passwordPresent: boolean;
   requestCredentialPresent: boolean;
-  sessions: readonly Pick<SessionRecord, "kind" | "externalId" | "attempt" | "issueId" | "projectId" | "agentId" | "workspaceId" | "provider" | "model" | "modeId" | "phase" | "createdAt" | "updatedAt" | "eventOffset" | "pendingPermissionCount" | "lastHeartbeatAt" | "cancellation" | "result" | "evidence" | "acceptance">[];
+  sessions: readonly Pick<SessionRecord, "key" | "kind" | "externalId" | "attempt" | "issueId" | "projectId" | "agentId" | "workspaceId" | "provider" | "model" | "modeId" | "phase" | "createdAt" | "updatedAt" | "pendingPermissionCount" | "lastHeartbeatAt" | "cancellation" | "result" | "evidence" | "acceptance">[];
   requests?: readonly Pick<RerunRequest, "id" | "issueId" | "projectId" | "operation" | "state" | "createdAt" | "updatedAt" | "commentId" | "runId">[];
 }
 
@@ -34,7 +34,7 @@ export async function diagnostics(context: Pick<ExperienceContext, "config" | "r
       kind: session.kind, externalId: session.externalId, attempt: session.attempt, issueId: session.issueId,
       projectId: identifier(session.projectId), agentId: identifier(session.agentId), workspaceId: identifier(session.workspaceId),
       provider: identifier(session.provider), model: identifier(session.model), modeId: identifier(session.modeId), phase: session.phase,
-      createdAt: session.createdAt, updatedAt: session.updatedAt, eventOffset: session.eventOffset,
+      createdAt: session.createdAt, updatedAt: session.updatedAt, eventOffset: context.storage.get(session.key)?.eventOffset ?? null,
       pendingPermissionCount: session.pendingPermissionCount ?? null, lastHeartbeatAt: session.lastHeartbeatAt ?? null, cancellation: session.cancellation ?? null,
       result: session.result ? { status: session.result.status, outputPresent: session.result.output !== undefined, errorPresent: session.result.error !== undefined, inputTokens: session.result.usage?.inputTokens ?? null, outputTokens: session.result.usage?.outputTokens ?? null } : null,
       evidence: session.evidence ? { toolCallCount: session.evidence.toolCallCount, historyComplete: session.evidence.historyComplete } : null,

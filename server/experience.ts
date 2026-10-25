@@ -3,7 +3,7 @@ import type { ExecutionPlan, IntegrationRuntime, QueuePreview, Readiness } from 
 import type { Gateway, Secrets } from "./contracts";
 import { ConfigurationError } from "./errors";
 import { repository } from "./git";
-import { makePlan, resolvePreferences } from "./plan";
+import { executionPreferences, makePlan, resolvePreferences } from "./plan";
 import { discoverProjects, resolveProject } from "./projects";
 import { Client, RequestError } from "./protocol";
 import type { PrivateStorage } from "./storage";
@@ -24,21 +24,10 @@ export async function planForIssue(context: ExperienceContext, input: { issueId:
   const projectId = String(issue.projectId);
   const mapping = await resolveProject(config, protocol, gateway, projectId);
   const project = { ...mapping, repository: (await repository(mapping.repository)).root };
-  const issueOverride = config.issueOverrides[String(issue.id)] ?? {};
-  const issuePreferences = resolvePreferences(config, project, issueOverride);
-  const manual: Partial<Selection> = { provider: input.provider, model: input.model, modeId: input.modeId };
-  const explicit = Object.values(manual).some((value) => value !== undefined);
-  const effectiveProject = explicit ? { ...project, ...issuePreferences.selection } : project;
-  const override = explicit ? manual : issueOverride;
-  const selection = await gateway.select(config, effectiveProject, override);
+  const resolved = await executionPreferences(protocol, config, project, issue, { provider: input.provider, model: input.model, modeId: input.modeId });
+  const selection = await gateway.select(config, project, resolved.selection);
   const host = await gateway.host();
-  const plan = makePlan(config, effectiveProject, selection, { projectId, issueId: issue.id, issueIdentifier: issue.identifier, host, override, overrideSource: explicit ? "manual" : "issue" });
-  if (explicit) {
-    for (const field of ["provider", "model", "mode"] as const) {
-      if (plan.sources[field] === "project") plan.sources[field] = issuePreferences.sources[field];
-    }
-  }
-  return plan;
+  return makePlan(config, project, selection, { projectId, issueId: issue.id, issueIdentifier: issue.identifier, host, sources: resolved.sources });
 }
 
 const claimWarning = "Claims are unfiltered across the agent's projects. Disabled or unmapped projects can still be claimed and fail; this preview does not change scheduling.";

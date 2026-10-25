@@ -1,7 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginSettings } from "@getpaseo/plugin/server";
 import { configSchema, type Config } from "../shared/config";
-import type { SessionRecord } from "../shared/models";
+import { publicSessionSchema, type SessionRecord } from "../shared/models";
 import type { IntegrationRuntime } from "../shared/experience";
 import type { Gateway, Secrets, SessionSnapshot } from "./contracts";
 import { PrivateStorage } from "./storage";
@@ -254,7 +254,7 @@ export class IntegrationService {
       message: this.engine?.message ?? this.message,
       credentialPresent: Boolean(secrets.apiKey), mcpCredentialPresent: Boolean(secrets.mcpToken), passwordPresent: Boolean(secrets.paseoPassword), requestCredentialPresent: Boolean(secrets.requestApiKey),
       runtime: this.runtime(),
-      requests: this.storage.requests().map(({ body: _body, planDigest: _digest, serverUrl: _url, ...request }) => request),
+      requests: this.storage.requests().map(({ body: _body, planDigest: _digest, serverUrl: _url, continuation: _continuation, continuationScope: _scope, ...request }) => request),
       sessions: this.storage.records().sort((a, b) => b.updatedAt - a.updatedAt).map((record) => {
         const session = native.get(record.agentId);
         return publicSession(session ? { ...record, provider: session.provider, model: session.model, modeId: session.modeId, pendingPermissionCount: session.pendingPermissionCount } : record);
@@ -299,4 +299,4 @@ export class IntegrationService {
   }
 }
 
-export function publicSession({ task: _task, pendingEvents: _events, intent: _intent, ...record }: SessionRecord) { return record; }
+export function publicSession(record: SessionRecord) { return publicSessionSchema.parse(record); }

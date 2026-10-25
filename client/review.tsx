@@ -1,14 +1,14 @@
 import { useCallback, useState } from "react";
 import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
-import type { SessionRecord } from "../shared/models";
+import type { PublicSession } from "../shared/models";
 import type { ExecutionReview } from "../shared/experience";
 import { markReviewedRpc, reviewRpc } from "../shared/rpc";
 import { Feedback, useAction, useResource, Warning } from "./common";
 
 const timestamp = (value: number | null | undefined) => value == null ? "Not reviewed" : new Date(value).toLocaleString();
 
-export function HistoricalReview({ session, onClose, onChange, ...props }: PluginSurfaceProps & { session: Omit<SessionRecord, "task">; onClose(): void; onChange(): void }) {
+export function HistoricalReview({ session, onClose, onChange, ...props }: PluginSurfaceProps & { session: PublicSession; onClose(): void; onChange(): void }) {
   const review = useRpc(reviewRpc);
   const markReviewed = useRpc(markReviewedRpc);
   const load = useCallback(() => review({ key: session.key }), [review, session.key]);

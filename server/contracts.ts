@@ -3,6 +3,8 @@ import type { Config, ProjectMapping, Selection } from "../shared/config";
 import type { AgUiEvent, ChatMessage, Issue, LinkedRepository, Project, Provider, Result, Run, SessionRecord } from "../shared/models";
 import type { LocalRepository } from "./repository-matching";
 import type { ExecutionEvidence, RerunRequest, TaskIntent } from "../shared/experience";
+import type { PersistedTaskContext, TaskContextAsset, TaskContextSnapshot } from "../shared/task-context";
+import type { UpstreamRun } from "./protocol";
 
 export interface Protocol {
   claim(signal?: AbortSignal): Promise<Run | null>;
@@ -16,6 +18,10 @@ export interface Protocol {
   projects(signal?: AbortSignal): Promise<Project[]>;
   repositories(projectId: number, signal?: AbortSignal): Promise<LinkedRepository[]>;
   issue(id: number, signal?: AbortSignal): Promise<Issue>;
+  context(issue: Issue, project: ProjectMapping, signal?: AbortSignal): Promise<TaskContextSnapshot>;
+  issueSelection(issue: Issue, project: ProjectMapping, signal?: AbortSignal): Promise<Partial<Selection>>;
+  identity(signal?: AbortSignal): Promise<{ id: string; username: string | null; isAgent: boolean }>;
+  getRun(id: number, signal?: AbortSignal): Promise<UpstreamRun | null>;
   intent(run: Run, issue?: Issue, signal?: AbortSignal, request?: (id: string) => RerunRequest | undefined): Promise<TaskIntent>;
   search(projectId: number, query: string, signal?: AbortSignal): Promise<Issue[]>;
   transition(issueId: number, columnId: number, evidence: string, signal?: AbortSignal): Promise<void>;
@@ -25,16 +31,23 @@ export interface SessionSnapshot {
   id: string; workspaceId: string | null; cwd: string; provider: string;
   active: boolean; archived: boolean; error?: string; lastMessage?: string;
   model: string | null; modeId: string | null; pendingPermissionCount: number;
+  lastUserMessageAt?: string | null;
+}
+export interface NativeAdmission {
+  expected: SessionSnapshot;
+  signal: AbortSignal;
+  onDispatch(): void;
 }
 export interface Gateway {
   host(): Promise<{ id: string; label: string }>;
   catalog(cwd?: string): Promise<Provider[]>;
   repositories(signal?: AbortSignal): Promise<LocalRepository[]>;
   select(config: Config, project: ProjectMapping, override?: Partial<Selection>): Promise<Selection>;
-  create(input: { key: string; agentId: string; title: string; project: ProjectMapping; selection: Selection; systemPrompt: string; config: Config; mcpToken?: string; issueId: number | null }): Promise<SessionSnapshot>;
+  create(input: { key: string; agentId: string; title: string; project: ProjectMapping; selection: Selection; systemPrompt: string; config: Config; mcpToken?: string; issueId: number | null; branchName?: string }): Promise<SessionSnapshot>;
   inspect(agentId: string, options?: { includeHistory?: boolean }): Promise<SessionSnapshot | null>;
-  send(agentId: string, prompt: string, messageId: string): Promise<void>;
-  wait(agentId: string, timeoutMs: number, onText: (text: string) => void, signal: AbortSignal, messageId?: string): Promise<Result & { evidence?: ExecutionEvidence }>;
+  observe?(agentId: string, messageId: string, signal: AbortSignal): Promise<() => Promise<void>>;
+  send(agentId: string, prompt: string, messageId: string, context?: TaskContextSnapshot, admission?: NativeAdmission): Promise<void>;
+  wait(agentId: string, timeoutMs: number, onText: (text: string) => void, signal: AbortSignal, messageId?: string, onEvent?: (event: AgUiEvent) => void): Promise<Result & { evidence?: ExecutionEvidence }>;
   cancel(agentId: string): Promise<void>;
   withApi?(paseo: PaseoApi): Gateway;
   close(): Promise<void>;
@@ -48,5 +61,7 @@ export interface Journal {
   putMany(records: SessionRecord[]): Promise<void>;
   update(key: string, change: (record: SessionRecord) => SessionRecord | undefined): Promise<void>;
   thread(threadId: string): { agentId: string; projectId: string } | undefined;
+  cacheTaskContext(context: TaskContextSnapshot): Promise<PersistedTaskContext>;
+  readContextAssets(context: PersistedTaskContext): Promise<TaskContextAsset[]>;
   bindThread(threadId: string, binding: { agentId: string; projectId: string }): Promise<void>;
 }

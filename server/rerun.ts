@@ -5,6 +5,8 @@ import { planForIssue, type ExperienceContext } from "./experience";
 import { Client, RequestError, type UpstreamRun } from "./protocol";
 import type { PrivateStorage } from "./storage";
 import { requestComment, smokeComment } from "./task";
+import { assertContinuationScope, assertSourceCurrent, continuationScope, sourceFacts } from "./continuation";
+import type { ContinuationScope } from "../shared/continuation";
 
 const operations = new WeakMap<PrivateStorage, Promise<unknown>>();
 type RequestSource = { kind: "run"; key: string } | { kind: "issue"; issueId: number };
@@ -53,7 +55,7 @@ async function scopeFor(context: ExperienceContext, source: RequestSource): Prom
   return { sourceKey: record.key, source: { kind: "run" }, issueId: record.issueId, projectId: record.projectId, agentId: run.agentId, actor: identity, run };
 }
 
-function bodyFor(scope: RequestScope, id: string, operation: "rerun" | "smoke"): string {
+function bodyFor(scope: RequestScope, id: string, operation: RerunRequest["operation"]): string {
   if (scope.source.kind === "issue") {
     if (operation !== "smoke") throw new ConfigurationError("Issue-origin execution requests support only the fixed smoke test.");
     return smokeComment(scope.actor.username, id, scope);
@@ -71,8 +73,8 @@ async function requestScope(context: ExperienceContext, request: RerunRequest): 
   return scope;
 }
 
-function digest(context: ExperienceContext, scope: RequestScope, plan: ExecutionPlan, body: string, delivery: RerunRequest["delivery"], requestActorId?: string): string {
-  return createHash("sha256").update(JSON.stringify({ version: 2, serverUrl: context.config.serverUrl, sourceKey: scope.sourceKey, source: scope.source, sourceRunId: scope.run?.id, agentId: scope.agentId, actorId: scope.actor.id, username: scope.actor.username, plan, body, delivery, requestActorId })).digest("hex");
+function digest(context: ExperienceContext, scope: RequestScope, plan: ExecutionPlan, body: string, delivery: RerunRequest["delivery"], requestActorId?: string, continuation?: ContinuationScope): string {
+  return createHash("sha256").update(JSON.stringify({ version: 2, serverUrl: context.config.serverUrl, sourceKey: scope.sourceKey, source: scope.source, sourceRunId: scope.run?.id, agentId: scope.agentId, actorId: scope.actor.id, username: scope.actor.username, plan, body, delivery, requestActorId, continuation })).digest("hex");
 }
 
 function legacyDigest(context: ExperienceContext, scope: RequestScope, plan: ExecutionPlan, body: string): string {
@@ -131,26 +133,38 @@ async function assertNoOutstanding(context: ExperienceContext, scope: RequestSco
   }
 }
 
-function prepare(context: ExperienceContext, source: RequestSource, operation: "rerun" | "smoke"): Promise<RerunPreview> {
+function prepare(context: ExperienceContext, source: RequestSource, operation: RerunRequest["operation"]): Promise<RerunPreview> {
   return exclusive(context, async () => {
     const scope = await scopeFor(context, source);
     const plan = await planForIssue(context, { issueId: scope.issueId });
     if (plan.projectId !== scope.projectId || plan.issueId !== scope.issueId) throw new ConfigurationError("The issue or project scope changed while preparing the request.");
     const existing = context.storage.requests().find((request) => request.serverUrl === context.config.serverUrl && request.sourceKey === scope.sourceKey && request.state === "prepared" && request.operation === operation);
     if (existing) await requestScope(context, existing);
+    let reviewedScope: ContinuationScope | undefined;
+    let continuationReview: RerunPreview["continuationReview"];
+    if (operation === "continue") {
+      if (!context.config.continuation?.enabled) throw new ConfigurationError("Enable reviewed continuation explicitly before preparing a continuation request.");
+      const record = context.storage.get(scope.sourceKey);
+      if (!record) throw new ConfigurationError("The original execution is unavailable.");
+      await assertSourceCurrent(context, record);
+      if (existing?.continuationScope) assertContinuationScope(record, existing.continuationScope);
+      reviewedScope = existing?.continuationScope ?? continuationScope(record);
+      continuationReview = { sourceAgentId: record.agentId, ...sourceFacts(record), expiresAt: reviewedScope.expiresAt,
+        statement: "I reviewed the original task, system instructions and requirements. This is the same unrestricted task, not a smoke test, exact response, no-tools request, new requirements, or broader scope. Reuse only this native session for this task." };
+    }
     await assertNoOutstanding(context, scope, existing?.id);
     const human = existing ? await deliveryActor(context, existing) : await requestActor(context);
     const delivery = existing?.delivery ?? (human ? "api" : "browser");
     const requestActorId = human?.id;
     const id = existing?.id ?? randomUUID();
     const body = existing?.body ?? bodyFor(scope, id, operation);
-    const planDigest = digest(context, scope, plan, body, delivery, requestActorId);
+    const planDigest = digest(context, scope, plan, body, delivery, requestActorId, reviewedScope);
     const now = Date.now();
-    const request: RerunRequest = { id, sourceKey: scope.sourceKey, source: scope.source, executionActorId: scope.actor.id, requestActorId, serverUrl: context.config.serverUrl, issueId: scope.issueId, projectId: scope.projectId, operation, state: "prepared", createdAt: existing?.createdAt ?? now, updatedAt: now, commentId: null, runId: null, body, planDigest, delivery };
+    const request: RerunRequest = { id, sourceKey: scope.sourceKey, source: scope.source, executionActorId: scope.actor.id, requestActorId, serverUrl: context.config.serverUrl, issueId: scope.issueId, projectId: scope.projectId, operation, state: "prepared", createdAt: existing?.createdAt ?? now, updatedAt: now, commentId: null, runId: null, body, planDigest, delivery, ...(reviewedScope ? { continuationScope: reviewedScope } : {}) };
     context.assertCurrent();
     await context.storage.putRequest(request);
     const disabled = !context.config.automatic || !context.config.projects[scope.projectId]?.automatic || context.runtime.paused || context.runtime.pendingConfiguration || !context.runtime.claiming || context.storage.paused();
-    return { requestId: id, sourceKey: scope.sourceKey, operation, plan, planDigest, delivery, warnings: [...(operation === "smoke" ? ["No-tools is instruction-only, not an enforced tool sandbox."] : []), ...(disabled ? ["Delivery is blocked until saved global and project automatic execution are enabled and claiming is resumed without a pending connection change."] : [])] };
+    return { requestId: id, sourceKey: scope.sourceKey, operation, plan, planDigest, delivery, ...(continuationReview ? { continuationReview } : {}), warnings: [...(operation === "smoke" ? ["No-tools is instruction-only, not an enforced tool sandbox."] : []), ...(disabled ? ["Delivery is blocked until saved global and project automatic execution are enabled and claiming is resumed without a pending connection change."] : [])] };
   });
 }
 
@@ -160,6 +174,10 @@ export function prepareRerun(context: ExperienceContext, input: { key: string; o
 
 export function prepareSmoke(context: ExperienceContext, input: { issueId: number }): Promise<RerunPreview> {
   return prepare(context, { kind: "issue", issueId: input.issueId }, "smoke");
+}
+
+export function prepareContinuation(context: ExperienceContext, input: { key: string }): Promise<RerunPreview> {
+  return prepare(context, { kind: "run", key: input.key }, "continue");
 }
 
 async function reconcile(context: ExperienceContext, request: RerunRequest): Promise<RerunResult> {
@@ -198,17 +216,25 @@ async function reconcile(context: ExperienceContext, request: RerunRequest): Pro
   return result(unknown, queue.complete ? "No matching upstream run is visible. This is not proof that the comment was not delivered. Do not repost a pending or unknown request." : "Only a partial queue is visible and no matching run was found. Delivery remains unproven. Do not repost a pending or unknown request.");
 }
 
-export function submitRerun(context: ExperienceContext, input: { requestId: string; planDigest: string }): Promise<RerunResult> {
+export function submitRerun(context: ExperienceContext, input: { requestId: string; planDigest: string; attestContinuation?: boolean }): Promise<RerunResult> {
   return exclusive(context, async () => {
-    const request = context.storage.request(input.requestId);
+    let request = context.storage.request(input.requestId);
     if (!request) throw new ConfigurationError("The prepared request is missing.");
     if (request.state !== "prepared") return reconcile(context, request);
     const scope = await requestScope(context, request);
     const plan = await planForIssue(context, { issueId: request.issueId });
     const human = await deliveryActor(context, request);
-    const currentDigest = !request.source && !request.executionActorId ? legacyDigest(context, scope, plan, request.body) : digest(context, scope, plan, request.body, request.delivery, human?.id);
+    const currentDigest = !request.source && !request.executionActorId ? legacyDigest(context, scope, plan, request.body) : digest(context, scope, plan, request.body, request.delivery, human?.id, request.continuationScope);
     if (plan.projectId !== request.projectId || plan.issueId !== request.issueId || input.planDigest !== request.planDigest || currentDigest !== request.planDigest) throw new ConfigurationError("The execution plan or request scope changed. Prepare and review the current plan before submitting.");
     await assertNoOutstanding(context, scope, request.id);
+    if (request.operation === "continue") {
+      if (!context.config.continuation?.enabled || input.attestContinuation !== true || !request.continuationScope) throw new ConfigurationError("Continuation requires an explicit human review of this task's unchanged scope.");
+      const record = context.storage.get(request.sourceKey);
+      if (!record) throw new ConfigurationError("The original execution is unavailable.");
+      await assertSourceCurrent(context, record);
+      assertContinuationScope(record, request.continuationScope);
+      request = { ...request, continuation: { ...request.continuationScope, requestId: request.id, approvedAt: Date.now(), attestation: "same-task-unrestricted" } };
+    }
     context.assertCurrent();
     assertEnabled(context, scope);
     if (request.delivery === "browser") {

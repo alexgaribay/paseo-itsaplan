@@ -1,20 +1,25 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { createHash } from "node:crypto";
 import { defaults, type Config, type Selection } from "../shared/config";
 import type { AgUiEvent, Result, Run, SessionRecord, Task } from "../shared/models";
 import type { Gateway, Journal, Protocol, SessionSnapshot } from "./contracts";
-import { Engine, taskKey } from "./engine";
+import { Engine, issueBranchName, taskKey } from "./engine";
 import { Client, RequestError } from "./protocol";
 import { ConfigurationError, StorageError } from "./errors";
 import type { LocalRepository } from "./repository-matching";
 import { resolvePreferences } from "./plan";
 import type { ExecutionEvidence, RerunRequest } from "../shared/experience";
 import { smokeComment } from "./task";
+import { captureProvenance, continuationScope } from "./continuation";
+import { requestComment } from "./task";
+import type { PersistedTaskContext, TaskContextAsset, TaskContextSnapshot } from "../shared/task-context";
 
 class MemoryJournal implements Journal {
   values = new Map<string, SessionRecord>();
   threads = new Map<string, { agentId: string; projectId: string }>();
   requests = new Map<string, RerunRequest>();
+  assets = new Map<string, TaskContextAsset>();
   records() { return structuredClone([...this.values.values()]); }
   get(key: string) { const value = this.values.get(key); return value && structuredClone(value); }
   request(id: string) { const value = this.requests.get(id); return value && structuredClone(value); }
@@ -23,15 +28,30 @@ class MemoryJournal implements Journal {
   async update(key: string, change: (record: SessionRecord) => SessionRecord | undefined) { const updated = change(this.get(key)!); if (updated) await this.put(updated); }
   thread(id: string) { return this.threads.get(id); }
   async bindThread(id: string, binding: { agentId: string; projectId: string }) { this.threads.set(id, binding); }
+  async cacheTaskContext(context: TaskContextSnapshot): Promise<PersistedTaskContext> {
+    for (const asset of context.assets) this.assets.set(asset.digest, structuredClone(asset));
+    return { ...context, assets: context.assets.map(({ data: _data, ...asset }) => asset) };
+  }
+  async readContextAssets(context: PersistedTaskContext): Promise<TaskContextAsset[]> {
+    return context.assets.map((reference) => {
+      const asset = this.assets.get(reference.digest);
+      if (!asset || createHash("sha256").update(Buffer.from(asset.data, "base64")).digest("hex") !== reference.digest) throw new ConfigurationError("Approved context asset is unavailable or changed");
+      return { ...reference, data: asset.data };
+    });
+  }
 }
 class CodingSessions implements Gateway {
   sessions = new Map<string, SessionSnapshot>();
-  sent: { id: string; prompt: string }[] = [];
+  sent: { id: string; prompt: string; context?: TaskContextSnapshot }[] = [];
   created: Parameters<Gateway["create"]>[0][] = [];
   canceled: string[] = [];
   delay = 2;
   result: Result = { status: "success", output: "Implemented; tests passed in the coding session", usage: { inputTokens: 100, outputTokens: 20 } };
   evidence: ExecutionEvidence | undefined;
+  activity: AgUiEvent[] = [];
+  observations = 0;
+  released = 0;
+  async observe() { this.observations++; return async () => { this.released++; }; }
   async host() { return { id: "native-host", label: "Test host" }; }
   async catalog() { return []; }
   repositoriesList: LocalRepository[] = [];
@@ -48,9 +68,16 @@ class CodingSessions implements Gateway {
     return value;
   }
   async inspect(id: string) { return this.sessions.get(id) ?? null; }
-  async send(id: string, prompt: string) { this.sent.push({ id, prompt }); this.sessions.get(id)!.active = true; }
-  async wait(id: string, _timeout: number, onText: (text: string) => void, signal: AbortSignal): Promise<Result & { evidence?: ExecutionEvidence }> {
+  async send(id: string, prompt: string, _messageId?: string, context?: TaskContextSnapshot, admission?: Parameters<Gateway["send"]>[4]) {
+    admission?.signal.throwIfAborted();
+    admission?.onDispatch();
+    this.sent.push({ id, prompt, context });
+    this.sessions.get(id)!.active = true;
+    this.sessions.get(id)!.lastUserMessageAt = `2026-10-25T00:00:${String(this.sent.length).padStart(2, "0")}Z`;
+  }
+  async wait(id: string, _timeout: number, onText: (text: string) => void, signal: AbortSignal, _messageId?: string, onEvent?: (event: AgUiEvent) => void): Promise<Result & { evidence?: ExecutionEvidence }> {
     await sleep(this.delay, undefined, { signal });
+    for (const event of this.activity) onEvent?.(event);
     onText("Implemented; ");
     onText("tests passed in the coding session");
     this.sessions.get(id)!.active = false;
@@ -72,6 +99,10 @@ function protocol() {
     chatResult: async (_id, result) => { reports.push(result); }, projects: async () => [], repositories: async () => [],
     issue: async (id) => ({ id, projectId: id === 8 ? 2 : 1, identifier: `PRJ-${id}`, title: "Acceptance requirements", description: "Implement the requested change" }),
     intent: async (run, issue) => ({ version: 1, source: "task", request: "Original task intent", projectId: String(issue?.projectId ?? 2), sourceRunId: run.id }),
+    identity: async () => ({ id: "execution-actor", username: "worker", isAgent: true }),
+    getRun: async (id) => ({ id, agentId: 9, username: "worker", projectId: "2", projectName: "Project", issueId: 8, issueIdentifier: "PRJ-8", prompt: "Original task intent", trigger: "delegation", status: "success", executionState: "success", attempts: 1, createdAt: "2026-10-25T00:00:00Z", nextAttemptAt: "2026-10-25T00:00:00Z" }),
+    issueSelection: async () => ({}),
+    context: async (issue) => ({ version: 1, issueId: issue.id, projectId: issue.projectId, capturedAt: Date.now(), digest: "a".repeat(64), text: "Approved optional context", warnings: [], development: [], assets: [] }),
     search: async () => [], transition: async () => { throw new Error("Unexpected automatic issue transition"); }, test: async () => {},
   };
   return { api, reports, events, beats: () => beats, cancel: () => { canceled = true; } };
@@ -412,7 +443,7 @@ test("cancellation before an in-flight send settles cancels again after acceptan
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let blocked = false;
   const send = value.coding.send.bind(value.coding);
-  value.coding.send = async (id, prompt) => { blocked = true; await gate; await send(id, prompt); };
+  value.coding.send = async (id, prompt, _messageId, _context, admission) => { admission?.onDispatch(); blocked = true; await gate; await send(id, prompt); };
   const work = value.engine.dispatch(value.task);
   await until(() => blocked);
   const cancellation = value.engine.cancel(taskKey(value.config.serverUrl, value.task));
@@ -596,14 +627,14 @@ test("structured task intent replaces runner framing and persists plan, actual s
   expect(value.wire.reports[0]).toEqual({ status: "success", output: "WRONG", attempt: 1 });
 });
 
-test("safe settings changes do not interrupt or reroute an accepted execution", async () => {
+test("settings changes do not interrupt or reroute an already-dispatched turn", async () => {
   const value = setup();
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
-  const issue = value.wire.api.issue;
-  value.wire.api.issue = async (id) => { await gate; return issue(id); };
+  const wait = value.coding.wait.bind(value.coding);
+  value.coding.wait = async (...args) => { await gate; return wait(...args); };
   const work = value.engine.dispatch(value.task);
-  await until(() => value.wire.beats() > 0);
+  await until(() => value.coding.sent.length === 1);
   value.engine.updateConfiguration({ ...value.config, automatic: false, executionTimeoutMs: 1, projects: { ...value.config.projects, "2": { ...value.config.projects["2"], model: "new-model", modeId: "plan" } } });
   release();
   await work;
@@ -885,4 +916,364 @@ test("duplicate first-run comments admit only one native execution across concur
   expect(value.journal.records().filter((record) => record.result?.status === "success").map((record) => record.externalId)).toEqual([31]);
   expect(value.journal.records().find((record) => record.externalId === 33)).toMatchObject({ phase: "finished", result: { status: "failed", error: "This execution request was already accepted by another upstream run; create a new request to run it again" } });
   expect(value.coding.sent).toHaveLength(1);
+});
+
+async function continuedExecution(provider = "codex", withContext = false) {
+  const value = setup({ continuation: { enabled: true }, activityPrivacy: "metadata" });
+  value.config.projects["2"]!.provider = provider;
+  if (withContext) value.config.projects["2"]!.taskContext = { enabled: true, checklists: true, relations: false, documents: false, attachments: false, development: false };
+  value.coding.evidence = { historyComplete: true, toolCallCount: 2 };
+  await value.engine.dispatch(value.task);
+  const source = value.journal.records()[0]!;
+  const id = "b9a64bc4-2bd9-4728-a386-3a8c3417e68a";
+  const scope = continuationScope(source);
+  const grant = { ...scope, requestId: id, approvedAt: Date.now(), attestation: "same-task-unrestricted" as const };
+  const request: RerunRequest = { id, sourceKey: source.key, source: { kind: "run" }, serverUrl: value.config.serverUrl, issueId: 8, projectId: "2", executionActorId: "execution-actor", operation: "continue", state: "unknown", createdAt: Date.now(), updatedAt: Date.now(), commentId: null, runId: null, delivery: "browser", body: requestComment("worker", id, 31, "continue"), planDigest: "reviewed", continuationScope: scope, continuation: grant };
+  value.journal.requests.set(id, request);
+  value.wire.api.intent = async () => ({ ...source.intent!, requestId: id });
+  const task: Task = { kind: "run", run: { ...value.task.run, id: 32, trigger: "mention", prompt: request.body } };
+  return { ...value, source, request, continuedTask: task };
+}
+
+describe("explicit same-task continuation", () => {
+  test.each(["omp", "codex", "claude"])("reuses a durably reviewed %s source only for its original task", async (provider) => {
+    const value = await continuedExecution(provider);
+    await value.engine.dispatch(value.continuedTask);
+    expect(value.coding.created).toHaveLength(1);
+    expect(value.coding.sent.map((entry) => entry.id)).toEqual([value.source.agentId, value.source.agentId]);
+    expect(value.coding.sent[1]!.prompt).toContain("Original task intent");
+    expect(value.coding.sent[1]!.prompt).not.toContain("paseo-request");
+    expect(value.journal.records()[1]).toMatchObject({ phase: "finished", continuation: { requestId: value.request.id }, result: { status: "success" } });
+    expect(value.coding.canceled).toEqual([]);
+    expect(value.coding.released).toBe(value.coding.observations);
+  });
+
+  test.each(["expired", "actor", "repository", "provider", "model", "mode", "requirements", "task", "system", "missing", "archived", "active", "permission", "native-history", "unknown", "failed", "canceled", "smoke", "exact", "no-tools"])("blocks %s source changes without canceling its native session", async (change) => {
+    const value = await continuedExecution();
+    const native = value.coding.sessions.get(value.source.agentId)!;
+    if (change === "expired") value.request.continuation!.expiresAt = 1;
+    if (change === "actor") value.wire.api.identity = async () => ({ id: "different-actor", username: "worker", isAgent: true });
+    if (change === "repository") value.config.projects["2"]!.repository = "/different/repository";
+    if (change === "provider") native.provider = "omp";
+    if (change === "model") native.model = "different-model";
+    if (change === "mode") native.modeId = "different-mode";
+    if (change === "requirements") value.wire.api.issue = async (id) => ({ ...value.source.taskIssue!, id, description: "Different requirements" });
+    if (change === "task") value.wire.api.intent = async () => ({ ...value.source.intent!, request: "A different task", requestId: value.request.id });
+    if (change === "system" && value.continuedTask.kind === "run") value.continuedTask.run.systemPrompt = "Different system contract";
+    if (change === "missing") value.coding.sessions.delete(value.source.agentId);
+    if (change === "archived") native.archived = true;
+    if (change === "active") native.active = true;
+    if (change === "permission") native.pendingPermissionCount = 1;
+    if (change === "native-history") native.lastUserMessageAt = "2026-10-25T12:00:00Z";
+    if (change === "unknown") await value.journal.put({ ...value.source, taskProvenance: undefined });
+    if (change === "failed") await value.journal.put({ ...value.source, result: { status: "failed" } });
+    if (change === "canceled") await value.journal.put({ ...value.source, phase: "canceled" });
+    if (["smoke", "exact", "no-tools"].includes(change)) {
+      const intent = { ...value.source.intent!, request: change === "smoke" ? "Run an integration smoke test" : change === "exact" ? "Reply exactly OK" : "Do not use tools" };
+      await value.journal.put({ ...value.source, intent, taskProvenance: captureProvenance(value.config, "execution-actor", intent, value.task.run.systemPrompt, value.source.taskIssue!) });
+    }
+    await value.engine.dispatch(value.continuedTask);
+    expect(value.coding.sent).toHaveLength(1);
+    expect(value.coding.created).toHaveLength(1);
+    expect(value.coding.canceled).toEqual([]);
+    expect(value.journal.records()[1]!.result?.status).toBe("failed");
+  });
+
+  test("rechecks lease and source after observation awaits without canceling an unrelated active turn", async () => {
+    const value = await continuedExecution();
+    value.coding.observe = async () => {
+      value.coding.observations++;
+      value.coding.sessions.get(value.source.agentId)!.active = true;
+      return async () => { value.coding.released++; };
+    };
+    await value.engine.dispatch(value.continuedTask);
+    expect(value.coding.sent).toHaveLength(1);
+    expect(value.coding.canceled).toEqual([]);
+    expect(value.coding.sessions.get(value.source.agentId)!.active).toBe(true);
+    expect(value.coding.released).toBe(value.coding.observations);
+  });
+
+  test("rechecks a changed actor after the native subscription is established", async () => {
+    const value = await continuedExecution();
+    value.coding.observe = async () => {
+      value.wire.api.identity = async () => ({ id: "changed-after-review", username: "worker", isAgent: true });
+      return async () => {};
+    };
+    await value.engine.dispatch(value.continuedTask);
+    expect(value.coding.sent).toHaveLength(1);
+    expect(value.coding.canceled).toEqual([]);
+  });
+
+  test("a lost lease during final admission never sends or cancels the source", async () => {
+    const value = await continuedExecution();
+    value.coding.observe = async () => {
+      value.wire.api.heartbeat = async () => { throw new RequestError(409, "Lease lost"); };
+      return async () => {};
+    };
+    await value.engine.dispatch(value.continuedTask);
+    expect(value.coding.sent).toHaveLength(1);
+    expect(value.coding.canceled).toEqual([]);
+  });
+
+  test("reload preserves the approved request and never admits a duplicate upstream run", async () => {
+    const value = await continuedExecution();
+    const reloaded = new Engine(value.config, value.wire.api, value.coding, value.journal, {});
+    running.push(reloaded);
+    await reloaded.dispatch(value.continuedTask);
+    await reloaded.dispatch({ kind: "run", run: { ...value.task.run, id: 33, trigger: "mention", prompt: value.request.body } });
+    expect(value.coding.sent).toHaveLength(2);
+    expect(value.coding.created).toHaveLength(1);
+    expect(value.journal.records()[2]!.result?.status).toBe("failed");
+  });
+
+  test("new mentions and failed retries always create fresh native sessions", async () => {
+    const value = setup({ continuation: { enabled: true } });
+    value.coding.result = { status: "failed", error: "Failure" };
+    await value.engine.dispatch(value.task);
+    await value.engine.dispatch({ kind: "run", run: { ...value.task.run, attempts: 2 } });
+    await value.engine.dispatch({ kind: "run", run: { ...value.task.run, id: 32, trigger: "mention", prompt: "Please do another task" } });
+    expect(value.coding.created).toHaveLength(3);
+    expect(new Set(value.coding.sent.map((entry) => entry.id)).size).toBe(3);
+    expect(value.coding.canceled).toEqual([]);
+  });
+});
+
+describe("runtime activity privacy and durable context", () => {
+  const activity: AgUiEvent[] = [
+    { type: "TOOL_CALL_START", toolCallId: "call-1", toolCallName: "read_file", parentMessageId: "native-message" },
+    { type: "TOOL_CALL_ARGS", toolCallId: "call-1", delta: "{\"path\":\"private-source.ts\"}" },
+    { type: "TOOL_CALL_END", toolCallId: "call-1" },
+    { type: "TOOL_CALL_RESULT", toolCallId: "call-1", messageId: "result-1", role: "tool", content: "private source content" },
+  ];
+  test.each([undefined, "off", "metadata", "full"] as const)("exports actual activity only with %s privacy", async (privacy) => {
+    const value = setup({ activityPrivacy: privacy });
+    value.coding.activity = [...activity, ...activity];
+    await value.engine.dispatch(value.task);
+    const tools = value.wire.events.filter((event) => event.type.startsWith("TOOL_CALL_"));
+    if (!privacy || privacy === "off") expect(tools).toEqual([]);
+    else if (privacy === "full") expect(tools).toEqual(activity);
+    else expect(tools).toEqual([activity[0], activity[2], { type: "TOOL_CALL_RESULT", toolCallId: "call-1", messageId: "result-1", role: "tool", content: "[Tool result withheld by activity privacy]" }]);
+    if (privacy !== "full") expect(JSON.stringify(value.journal.records())).not.toContain("private source content");
+  });
+  test("trace-disabled runs never export tool events even in full mode", async () => {
+    const value = setup({ activityPrivacy: "full" });
+    value.coding.activity = activity;
+    await value.engine.dispatch({ kind: "run", run: { ...value.task.run, traceEvents: false } });
+    expect(value.wire.events).toEqual([]);
+    expect(value.journal.records()[0]!.activityEventIds).toEqual([]);
+  });
+  test("recovered traces do not replay delivered tool or assistant events", async () => {
+    const value = setup({ activityPrivacy: "metadata" });
+    value.coding.activity = activity;
+    await value.engine.dispatch(value.task);
+    const record = value.journal.records()[0]!;
+    await value.journal.put({ ...record, phase: "running", result: undefined, pendingEvents: [] });
+    value.coding.sessions.get(record.agentId)!.active = true;
+    value.wire.events.length = 0;
+    const reloaded = new Engine(value.config, value.wire.api, value.coding, value.journal, {});
+    running.push(reloaded);
+    await reloaded.dispatch(value.task);
+    expect(value.wire.events.filter((event) => event.type.startsWith("TOOL_CALL_") || event.type === "TEXT_MESSAGE_CONTENT")).toEqual([]);
+  });
+  test("persists asset references before send and delivers authenticated images without prompt base64", async () => {
+    const value = setup();
+    value.config.projects["2"]!.taskContext = { enabled: true, checklists: true, relations: false, documents: false, attachments: true, development: false };
+    const bytes = Buffer.from("image bytes");
+    const asset = { id: "62dbe75a-7818-4d06-9fc6-616c884d8da6", filename: "screen.png", mimeType: "image/png" as const, data: bytes.toString("base64"), digest: createHash("sha256").update(bytes).digest("hex") };
+    value.wire.api.context = async (issue) => ({ version: 1, issueId: issue.id, projectId: issue.projectId, capturedAt: 1, digest: "a".repeat(64), text: "Checklist requirement", warnings: ["Image model support is unverified"], development: [], assets: [asset] });
+    const send = value.coding.send.bind(value.coding);
+    value.coding.send = async (...args) => {
+      const persisted = value.journal.records()[0]!;
+      expect(persisted.taskContext?.assets).toEqual([{ id: asset.id, filename: "screen.png", mimeType: "image/png", digest: asset.digest }]);
+      expect(args[1]).not.toContain(asset.data);
+      await send(...args);
+    };
+    await value.engine.dispatch(value.task);
+    expect(value.coding.sent[0]!.context?.assets).toEqual([asset]);
+    expect(value.coding.sent[0]!.prompt).toContain("Checklist requirement");
+    expect(value.coding.sent[0]!.prompt).toContain("Image model support is unverified");
+  });
+  test("smoke never collects optional issue context", async () => {
+    const value = setup();
+    value.config.projects["2"]!.taskContext = { enabled: true, checklists: true, relations: true, documents: true, attachments: true, development: true };
+    value.wire.api.intent = async (run) => ({ version: 1, source: "smoke", request: "Reply exactly OK. Do not use tools.", projectId: "2", sourceRunId: run.id, acceptance: { expectedOutput: "OK", noTools: true } });
+    value.wire.api.context = async () => { throw new Error("Smoke context must never be fetched"); };
+    await value.engine.dispatch(value.task);
+    expect(value.coding.sent).toHaveLength(1);
+    expect(value.journal.records()[0]!.taskContext).toBeUndefined();
+  });
+});
+
+test.each(["schedule", "manual"] as const)("issue-less %s tasks route through authoritative project intent and get run titles", async (trigger) => {
+  const value = setup();
+  await value.engine.dispatch({ kind: "run", run: { ...value.task.run, issueId: null, issueIdentifier: null, trigger } });
+  expect(value.coding.created[0]).toMatchObject({ title: `It's a Plan ${trigger} run 31`, project: { repository: "/configured/two" }, selection: { provider: "codex" }, issueId: null });
+  expect(value.journal.records()[0]).toMatchObject({ projectId: "2", phase: "finished" });
+});
+
+test("new issue branches carry canonical identifiers while retries keep their durable choice", async () => {
+  const value = setup();
+  value.config.projects["2"]!.worktree = true;
+  await value.engine.dispatch(value.task);
+  const source = value.journal.records()[0]!;
+  expect(source.branchName).toMatch(/^PRJ-8-itsaplan-[a-f0-9]{24}$/);
+  expect(value.coding.created[0]!.branchName).toBe(source.branchName);
+  expect(issueBranchName("stable", "bad/../../branch")).toMatch(/^itsaplan-[a-f0-9]{24}$/);
+  expect(issueBranchName("stable", "PRJ-8")).toBe(issueBranchName("stable", "PRJ-8"));
+});
+
+test("automatic and manual issue execution use the configured field preference resolver", async () => {
+  const value = setup();
+  value.config.projects["2"]!.fieldBindings = [{ projectId: 2, issueTypeId: null, fieldId: 3, optionId: 4, provider: "claude", model: "field-model" }];
+  value.wire.api.issueSelection = async () => ({ provider: "claude", model: "field-model" });
+  await value.engine.dispatch(value.task);
+  const manual = await value.engine.manual(await value.wire.api.issue(8), value.coding, { model: "manual-model" });
+  expect(value.coding.created[0]!.selection).toMatchObject({ provider: "claude", model: "field-model" });
+  expect(value.journal.records()[0]!.plan!.sources).toMatchObject({ provider: "field", model: "field" });
+  expect(manual.plan!.selection).toMatchObject({ provider: "claude", model: "manual-model" });
+  expect(manual.plan!.sources).toMatchObject({ provider: "field", model: "manual" });
+});
+
+test("full tool activity redacts every captured plugin credential before journaling or delivery", async () => {
+  const value = setup({ activityPrivacy: "full" });
+  const secrets = { apiKey: "runner-private-key", mcpToken: "mcp-private-token", requestApiKey: "human-private-key", paseoPassword: "paseo-private-password" };
+  const text = JSON.stringify(secrets);
+  value.coding.activity = [
+    { type: "TOOL_CALL_START", toolCallId: "call", toolCallName: "native_tool" },
+    { type: "TOOL_CALL_ARGS", toolCallId: "call", delta: text },
+    { type: "TOOL_CALL_END", toolCallId: "call" },
+    { type: "TOOL_CALL_RESULT", toolCallId: "call", messageId: "result", role: "tool", content: text },
+  ];
+  const engine = new Engine(value.config, value.wire.api, value.coding, value.journal, secrets);
+  running.push(engine);
+  await engine.dispatch(value.task);
+  const tools = value.wire.events.filter((event) => event.type.startsWith("TOOL_CALL_"));
+  expect(tools).toHaveLength(4);
+  expect(tools).toContainEqual({ type: "TOOL_CALL_RESULT", toolCallId: "call", messageId: "result", role: "tool", content: '{"apiKey":"[redacted]","mcpToken":"[redacted]","requestApiKey":"[redacted]","paseoPassword":"[redacted]"}' });
+  for (const credential of Object.values(secrets)) {
+    expect(JSON.stringify(value.wire.events)).not.toContain(credential);
+    expect(JSON.stringify(value.journal.records())).not.toContain(credential);
+  }
+  expect(value.journal.records()[0]!.result?.status).toBe("success");
+});
+
+test("missing durable image bytes fail closed without fetching new task context", async () => {
+  const value = setup();
+  value.config.projects["2"]!.taskContext = { enabled: true, checklists: false, relations: false, documents: false, attachments: true, development: false };
+  let fetches = 0;
+  const bytes = Buffer.from("approved bytes");
+  const asset = { id: "62dbe75a-7818-4d06-9fc6-616c884d8da6", filename: "screen.png", mimeType: "image/png" as const, data: bytes.toString("base64"), digest: createHash("sha256").update(bytes).digest("hex") };
+  value.wire.api.context = async (issue) => { fetches++; return { version: 1, issueId: issue.id, projectId: issue.projectId, capturedAt: 1, digest: "b".repeat(64), text: "Original snapshot", warnings: [], development: [], assets: [asset] }; };
+  const create = value.coding.create.bind(value.coding);
+  value.coding.create = async (input) => { value.journal.assets.clear(); return create(input); };
+  await value.engine.dispatch(value.task);
+  expect(value.coding.sent).toEqual([]);
+  expect(fetches).toBe(1);
+  expect(value.journal.records()[0]!.result).toMatchObject({ status: "failed", error: "Approved context asset is unavailable or changed" });
+});
+
+test("a retried continuation cannot transfer the earlier attempt's approval", async () => {
+  const value = await continuedExecution();
+  value.coding.observe = async () => { throw new ConfigurationError("Native observation unavailable"); };
+  await value.engine.dispatch(value.continuedTask);
+  expect(value.journal.records()[1]!.result).toMatchObject({ status: "failed", error: "Native observation unavailable" });
+  value.coding.observe = async () => async () => {};
+  if (value.continuedTask.kind !== "run") throw new Error("Expected issue run");
+  await value.engine.dispatch({ kind: "run", run: { ...value.continuedTask.run, attempts: 2 } });
+  expect(value.journal.records()[2]!.result).toMatchObject({ status: "failed", error: "A continuation retry requires a new reviewed request; an earlier attempt cannot transfer its approval" });
+  expect(value.coding.sent).toHaveLength(1);
+  expect(value.coding.canceled).toEqual([]);
+});
+
+test("authoritative source failure after attestation prevents native reuse", async () => {
+  const value = await continuedExecution();
+  const getRun = value.wire.api.getRun;
+  value.wire.api.getRun = async (id) => ({ ...(await getRun(id))!, status: "failed", executionState: "failed" });
+  await value.engine.dispatch(value.continuedTask);
+  expect(value.journal.records()[1]!.result).toMatchObject({ status: "failed", error: "The authoritative continuation source is no longer successful or belongs to another scope" });
+  expect(value.coding.sent).toHaveLength(1);
+  expect(value.coding.canceled).toEqual([]);
+});
+
+test("the final sending fence catches changed source requirements after durable admission", async () => {
+  const value = await continuedExecution();
+  const put = value.journal.put.bind(value.journal);
+  value.journal.put = async (record) => {
+    await put(record);
+    if (record.externalId === 32 && record.phase === "sending") {
+      value.wire.api.issue = async (id) => ({ ...value.source.taskIssue!, id, description: "New requirements while persistence awaited" });
+    }
+  };
+  await value.engine.dispatch(value.continuedTask);
+  expect(value.journal.records()[1]!.result?.status).toBe("failed");
+  expect(value.coding.sent).toHaveLength(1);
+  expect(value.coding.canceled).toEqual([]);
+});
+
+test.each(["same", "changed"])("continuation checks %s optional requirements without replacing the approved snapshot", async (state) => {
+  const value = await continuedExecution("codex", true);
+  const original = value.source.taskContext!;
+  value.wire.api.context = async () => ({ ...original, capturedAt: original.capturedAt + 1000, digest: "c".repeat(64), text: state === "same" ? original.text : "Changed checklist requirement", assets: [] });
+  await value.engine.dispatch(value.continuedTask);
+  expect(value.journal.get(value.source.key)!.taskContext).toEqual(original);
+  expect(value.journal.records()[1]!.result?.status).toBe(state === "same" ? "success" : "failed");
+  expect(value.coding.sent).toHaveLength(state === "same" ? 2 : 1);
+  expect(value.coding.canceled).toEqual([]);
+});
+
+test("a native send preflight rejection never grants cancellation ownership over the source", async () => {
+  const value = await continuedExecution();
+  value.coding.send = async () => {
+    await sleep(1);
+    value.coding.sessions.get(value.source.agentId)!.active = true;
+    throw new ConfigurationError("Paseo session is no longer idle");
+  };
+  await value.engine.dispatch(value.continuedTask);
+  expect(value.journal.records()[1]!.result).toMatchObject({ status: "failed", error: "Paseo session is no longer idle" });
+  expect(value.coding.canceled).toEqual([]);
+  expect(value.coding.sessions.get(value.source.agentId)!.active).toBe(true);
+});
+
+test.each([
+  ["fresh", "config"], ["fresh", "credential"], ["continue", "config"], ["continue", "credential"],
+] as const)("invalidates %s prompt admission when %s changes during the final native refresh", async (kind, changed) => {
+  const continued = kind === "continue" ? await continuedExecution() : undefined;
+  const value = continued ?? setup();
+  const task = continued?.continuedTask ?? value.task;
+  const originalPrompts = value.coding.sent.length;
+  const send = value.coding.send.bind(value.coding);
+  let refreshing = false;
+  const { promise: refresh, resolve: finishRefresh } = Promise.withResolvers<void>();
+  value.coding.send = async (...args) => {
+    refreshing = true;
+    await refresh;
+    await send(...args);
+  };
+  const work = value.engine.dispatch(task);
+  await until(() => refreshing);
+  if (changed === "config") value.engine.updateConfiguration({ ...value.config, defaultModeId: "new-mode" });
+  else value.engine.updateConfiguration(value.config, { apiKey: "rotated-execution-key", mcpToken: "rotated-mcp-token", requestApiKey: "rotated-human-key", paseoPassword: "rotated-native-password" });
+  finishRefresh();
+  await work;
+  expect(value.coding.sent).toHaveLength(originalPrompts);
+  expect(value.journal.get(taskKey(value.config.serverUrl, task))!.result?.status).toBe("failed");
+  expect(value.coding.canceled).toEqual([]);
+  if (continued) expect(value.coding.sessions.get(continued.source.agentId)!.active).toBe(false);
+});
+
+test.each(["config", "credential"])("invalidates manual admission when %s changes during native refresh", async (changed) => {
+  const value = setup();
+  const send = value.coding.send.bind(value.coding);
+  let refreshing = false;
+  const { promise: refresh, resolve: finishRefresh } = Promise.withResolvers<void>();
+  value.coding.send = async (...args) => { refreshing = true; await refresh; await send(...args); };
+  const operation = value.engine.manual(await value.wire.api.issue(8), value.coding).catch((error: unknown) => error);
+  await until(() => refreshing);
+  if (changed === "config") value.engine.updateConfiguration({ ...value.config, defaultModeId: "new-mode" });
+  else value.engine.updateConfiguration(value.config, { apiKey: "rotated-key" });
+  finishRefresh();
+  expect(await operation).toBeInstanceOf(ConfigurationError);
+  expect(value.coding.sent).toEqual([]);
+  expect(value.coding.canceled).toEqual([]);
+  expect(value.journal.records()[0]).toMatchObject({ phase: "canceled", cancellation: "confirmed" });
 });

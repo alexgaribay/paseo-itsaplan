@@ -8,6 +8,8 @@ import { sessionSchema, type SessionRecord } from "../shared/models";
 import { rerunRequestSchema, type RerunRequest } from "../shared/experience";
 import type { Journal, Secrets } from "./contracts";
 import { ConfigurationError, StorageError } from "./errors";
+import type { PersistedTaskContext, TaskContextAsset, TaskContextSnapshot } from "../shared/task-context";
+import { cacheContextAssets, hydrateContextAssets } from "./context-assets";
 
 const storedSchema = z.object({
   version: z.literal(1), records: z.record(z.string(), sessionSchema), threads: z.record(z.string(), z.object({ agentId: z.string(), projectId: z.string() })),
@@ -53,6 +55,7 @@ export class PrivateStorage implements Journal {
   private serial = Promise.resolve();
   private credentialsSerial = Promise.resolve();
   private releaseLock: (() => Promise<void>) | undefined;
+  private readonly contextOperations = new Set<Promise<unknown>>();
   constructor(readonly directory: string) {}
 
   async initialize(): Promise<void> {
@@ -153,6 +156,20 @@ export class PrivateStorage implements Journal {
   bindThread(threadId: string, binding: { agentId: string; projectId: string }): Promise<void> {
     return this.commit((next) => { next.threads[threadId] = binding; });
   }
+  private contextOperation<T>(run: () => Promise<T>): Promise<T> {
+    if (this.closing) return Promise.reject(new StorageError("Private integration storage is closed"));
+    const operation = run();
+    this.contextOperations.add(operation);
+    const settled = () => { this.contextOperations.delete(operation); };
+    void operation.then(settled, settled);
+    return operation;
+  }
+  cacheTaskContext(snapshot: TaskContextSnapshot): Promise<PersistedTaskContext> {
+    return this.contextOperation(() => cacheContextAssets(this.directory, snapshot));
+  }
+  readContextAssets(snapshot: PersistedTaskContext): Promise<TaskContextAsset[]> {
+    return this.contextOperation(() => hydrateContextAssets(this.directory, snapshot));
+  }
   secrets(): Promise<Secrets> {
     if (this.closing) return Promise.reject(new StorageError("Private integration storage is closed"));
     return this.readSecrets();
@@ -179,6 +196,7 @@ export class PrivateStorage implements Journal {
   async close(): Promise<void> {
     this.closing = true;
     await this.serial;
+    await Promise.allSettled([...this.contextOperations]);
     await this.credentialsSerial;
     const release = this.releaseLock;
     this.releaseLock = undefined;

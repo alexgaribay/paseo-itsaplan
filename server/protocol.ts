@@ -2,15 +2,17 @@
 // Copyright 2026 Andrii Poluosmak. Licensed under Apache-2.0.
 // Changes add validated responses, cancellation, safe errors, and planner API access.
 import { z } from "zod";
-import { httpUrl } from "../shared/config";
+import { httpUrl, type ProjectMapping, type Selection } from "../shared/config";
+import { contextLimits, customFieldSchema, type CustomField, type TaskContextSnapshot } from "../shared/task-context";
 import {
-  chatSchema, issueSchema, projectSchema, resultSchema, runSchema,
+  chatSchema, eventSchema, issueSchema, projectSchema, resultSchema, runSchema,
   type AgUiEvent, type ChatMessage, type Issue, type LinkedRepository, type Project, type Result, type Run,
 } from "../shared/models";
 import type { Protocol } from "./contracts";
 import type { RerunRequest, TaskIntent } from "../shared/experience";
 import { ConfigurationError } from "./errors";
 import { parseRequestComment, smokeOutput, smokeTask } from "./task";
+import { collectTaskContext } from "./task-context";
 
 const positiveId = z.number().int().positive();
 const projectWire = projectSchema.omit({ repositoryMatch: true }).extend({ ref: z.string().min(1), teamId: positiveId.optional() });
@@ -36,6 +38,17 @@ const queueRunWire = z.object({
   executionState: z.enum(["queued", "running", "success", "failed", "canceled"]),
   attempts: z.number().int().nonnegative(), createdAt: z.string().datetime({ offset: true }), nextAttemptAt: z.string().datetime({ offset: true }),
 });
+const fieldIssueWire = z.object({
+  id: positiveId, projectId: positiveId, typeId: positiveId.nullable(),
+  fields: z.array(z.object({ fieldId: positiveId, fieldType: z.string(), optionIds: z.array(positiveId).max(1000) })).max(1000),
+});
+const feedWire = z.object({
+  items: z.array(z.object({
+    id: positiveId, issueId: positiveId, kind: z.string().max(100),
+    actorUserId: z.string().min(1).max(500).nullable(), body: z.string().max(50_000).nullable(),
+  })).max(2000),
+  nextCursor: z.object({ ts: z.string().min(1).max(200), id: positiveId }).nullable(),
+});
 const queuePageWire = z.object({
   items: z.array(queueRunWire).max(100), total: z.number().int().nonnegative(), page: positiveId, pageSize: positiveId.max(100),
 });
@@ -48,14 +61,6 @@ export type UpstreamRun = {
   prompt: string; trigger: Run["trigger"]; status: "pending" | "success" | "failed" | "canceled";
   executionState: "queued" | "running" | "success" | "failed" | "canceled"; attempts: number; createdAt: string; nextAttemptAt: string;
 };
-const eventSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("RUN_STARTED"), threadId: z.string(), runId: z.string() }),
-  z.object({ type: z.literal("RUN_FINISHED"), threadId: z.string(), runId: z.string() }),
-  z.object({ type: z.literal("RUN_ERROR"), message: z.string().max(2_000) }),
-  z.object({ type: z.literal("TEXT_MESSAGE_START"), messageId: z.string().max(200), role: z.literal("assistant") }),
-  z.object({ type: z.literal("TEXT_MESSAGE_CONTENT"), messageId: z.string().max(200), delta: z.string().max(12_000) }),
-  z.object({ type: z.literal("TEXT_MESSAGE_END"), messageId: z.string().max(200) }),
-]);
 
 export class RequestError extends Error {
   constructor(readonly status: number, message: string) {
@@ -98,8 +103,8 @@ export class Client implements Protocol {
   }
 
   private request(method: string, path: string, body: unknown, signal?: AbortSignal): Promise<void>;
-  private request<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, schema: z.ZodType<T>, timeoutMs?: number): Promise<T>;
-  private async request(method: string, path: string, body: unknown, signal?: AbortSignal, schema?: z.ZodType, timeoutMs = 30_000): Promise<unknown> {
+  private request<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, schema: z.ZodType<T>, timeoutMs?: number, maxResponseBytes?: number): Promise<T>;
+  private async request(method: string, path: string, body: unknown, signal?: AbortSignal, schema?: z.ZodType, timeoutMs = 30_000, maxResponseBytes?: number): Promise<unknown> {
     const timeout = AbortSignal.timeout(timeoutMs);
     const joined = this.signal ? AbortSignal.any(signal ? [this.signal, signal, timeout] : [this.signal, timeout]) : signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {
@@ -114,7 +119,35 @@ export class Client implements Protocol {
         await response.body?.cancel();
         return;
       }
-      const raw: unknown = response.status === 204 ? undefined : await response.json();
+      let raw: unknown;
+      if (response.status === 204) raw = undefined;
+      else if (maxResponseBytes !== undefined) {
+        const declared = response.headers.get("content-length");
+        if (declared && Number(declared) > maxResponseBytes) {
+          await response.body?.cancel();
+          throw new RequestError(502, "It's a Plan response exceeds the context budget");
+        }
+        const reader = response.body?.getReader();
+        if (!reader) throw new RequestError(502, "Invalid response from It's a Plan");
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const chunks: string[] = [];
+        let bytes = 0;
+        try {
+          for (;;) {
+            joined.throwIfAborted();
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            bytes += chunk.value.byteLength;
+            if (bytes > maxResponseBytes) throw new RequestError(502, "It's a Plan response exceeds the context budget");
+            chunks.push(decoder.decode(chunk.value, { stream: true }));
+          }
+          chunks.push(decoder.decode());
+          raw = JSON.parse(chunks.join(""));
+        } finally {
+          await reader.cancel();
+          reader.releaseLock();
+        }
+      } else raw = await response.json();
       const parsed = schema.safeParse(raw);
       if (!parsed.success) throw new RequestError(502, "Invalid response from It's a Plan");
       return parsed.data;
@@ -232,6 +265,40 @@ export class Client implements Protocol {
       return { ...hit, projectId };
     });
   }
+  async customFields(projectId: number, issueTypeId?: number, signal?: AbortSignal): Promise<CustomField[]> {
+    if (issueTypeId !== undefined) input(positiveId, issueTypeId);
+    const ref = await this.projectReference(projectId, signal);
+    const query = issueTypeId === undefined ? "" : `?issueTypeId=${issueTypeId}`;
+    return this.request("GET", `/projects/${encodeURIComponent(ref)}/custom-fields${query}`, undefined, signal, z.array(customFieldSchema).max(1000), 30_000, contextLimits.responseBytes);
+  }
+  async issueSelection(issue: Issue, project: ProjectMapping, signal?: AbortSignal): Promise<Partial<Selection>> {
+    const bindings = project.fieldBindings ?? [];
+    if (!bindings.length) return {};
+    if (bindings.some((binding) => binding.projectId !== issue.projectId)) throw new ConfigurationError("A field mapping belongs to a different project. Review this project's field mappings.");
+    const current = await this.request("GET", `/issues/${input(positiveId, issue.id)}`, undefined, signal, fieldIssueWire, 30_000, contextLimits.responseBytes);
+    if (current.id !== issue.id || current.projectId !== issue.projectId) throw new RequestError(502, "Invalid issue field scope from It's a Plan");
+    const fields = await this.customFields(issue.projectId, current.typeId ?? undefined, signal);
+    const matches: Partial<Selection>[] = [];
+    for (const binding of bindings) {
+      if (binding.issueTypeId !== null && binding.issueTypeId !== current.typeId) continue;
+      const field = fields.find((candidate) => candidate.id === binding.fieldId && candidate.issueTypeId === binding.issueTypeId);
+      if (!field || !["select", "multi_select"].includes(field.fieldType) || !field.options.some((option) => option.id === binding.optionId)) {
+        throw new ConfigurationError("A configured provider/model field or option is unavailable or changed type. Review this project's field mappings.");
+      }
+      const value = current.fields.find((candidate) => candidate.fieldId === field.id);
+      if (value && value.fieldType !== field.fieldType) throw new ConfigurationError("Issue field metadata changed while resolving execution preferences. Refresh the field mappings.");
+      if (value?.optionIds.includes(binding.optionId)) matches.push({ provider: binding.provider, model: binding.model });
+    }
+    const selected = matches[0];
+    if (matches.some((match) => match.provider !== selected?.provider || match.model !== selected?.model)) throw new ConfigurationError("Selected issue field options map to conflicting providers or models. Choose one execution selection.");
+    return selected ?? {};
+  }
+  async context(issue: Issue, project: ProjectMapping, signal?: AbortSignal): Promise<TaskContextSnapshot> {
+    const read = <T>(path: string, schema: z.ZodType<T>, requestSignal?: AbortSignal) =>
+      this.request("GET", path, undefined, requestSignal, schema, contextLimits.timeoutMs, contextLimits.responseBytes);
+    const cancellation = this.signal ? AbortSignal.any([this.signal, ...(signal ? [signal] : [])]) : signal;
+    return collectTaskContext(issue, project, read, cancellation, { redact: [this.apiKey] });
+  }
   async transition(issueId: number, columnId: number, evidence: string, signal?: AbortSignal): Promise<void> {
     input(positiveId, issueId);
     input(positiveId, columnId);
@@ -347,6 +414,23 @@ export class Client implements Protocol {
       if (!previous || previous.agentId !== scope.agentId || previous.projectId !== scope.projectId || previous.issueId !== scope.issueId) {
         throw new ConfigurationError("The Paseo execution request references a different agent, project, or issue");
       }
+      if (request.operation === "continue") {
+        const prepared = lookup?.(request.requestId);
+        const actor = await this.identity(signal);
+        const grant = prepared?.continuation;
+        if (source.trigger !== "mention" || !prepared || prepared.operation !== "continue" ||
+          prepared.serverUrl.replace(/\/+$/, "") !== this.url || prepared.body !== source.prompt ||
+          prepared.issueId !== scope.issueId || prepared.projectId !== scope.projectId ||
+          prepared.executionActorId !== actor.id || !actor.isAgent || actor.username !== source.username ||
+          (prepared.delivery === "api" && !prepared.requestActorId) ||
+          !["unknown", "submitted", ...(prepared.delivery === "api" ? ["submitting"] : [])].includes(prepared.state) ||
+          (prepared.runId !== null && prepared.runId !== source.id) ||
+          !grant || grant.requestId !== prepared.id || grant.requestId !== request.requestId ||
+          grant.executionActorId !== actor.id || grant.sourceKey !== prepared.sourceKey ||
+          grant.attestation !== "same-task-unrestricted" || (depth === 0 && grant.expiresAt <= Date.now())) {
+          throw new ConfigurationError("The continuation request is not backed by a matching durable approval for this task and actor");
+        }
+      }
       if (request.operation === "smoke") return { version: 1, source: "smoke", request: smokeTask, projectId: scope.projectId, sourceRunId: previous.id, requestId, acceptance: { expectedOutput: smokeOutput, noTools: true } };
       source = previous;
     }
@@ -354,8 +438,37 @@ export class Client implements Protocol {
   }
   async comment(issueId: number, body: string, signal?: AbortSignal): Promise<{ id: number }> {
     input(positiveId, issueId);
-    input(z.string().min(1).max(100000), body);
+    input(z.string().min(1).max(50_000), body);
     return this.request("POST", `/issues/${issueId}/comments`, { body }, signal, z.object({ id: positiveId }));
+  }
+  async updateComment(commentId: number, body: string, signal?: AbortSignal): Promise<{ id: number }> {
+    input(positiveId, commentId);
+    input(z.string().min(1).max(50_000), body);
+    const result = await this.request("PATCH", `/comments/${commentId}`, { body }, signal, z.object({ id: positiveId }));
+    if (result.id !== commentId) throw new RequestError(502, "Invalid comment update receipt from It's a Plan");
+    return result;
+  }
+  async commentFeed(issueId: number, signal?: AbortSignal): Promise<{ items: Array<{ id: number; body: string; actorId: string }>; complete: boolean }> {
+    input(positiveId, issueId);
+    const deadline = AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]);
+    const items: Array<{ id: number; body: string; actorId: string }> = [];
+    const ids = new Set<number>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const query = new URLSearchParams({ filter: "comments", limit: "100", order: "desc", ...(cursor ? { cursor } : {}) });
+      const result = await this.request("GET", `/issues/${issueId}/feed?${query}`, undefined, deadline, feedWire, 30_000, contextLimits.responseBytes);
+      for (const row of result.items) {
+        if (row.issueId !== issueId || ids.has(row.id)) throw new RequestError(502, "Invalid comment feed scope or pagination from It's a Plan");
+        ids.add(row.id);
+        if (row.kind === "comment" && row.body !== null && row.actorUserId !== null) items.push({ id: row.id, body: row.body, actorId: row.actorUserId });
+      }
+      if (result.nextCursor === null) return { items, complete: true };
+      cursor = JSON.stringify(result.nextCursor);
+      if (cursors.has(cursor)) throw new RequestError(502, "Invalid comment feed pagination from It's a Plan");
+      cursors.add(cursor);
+    }
+    return { items, complete: false };
   }
   async test(signal?: AbortSignal): Promise<void> {
     if (!(await this.identity(signal)).isAgent) throw new AgentIdentityError();

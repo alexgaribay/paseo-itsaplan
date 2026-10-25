@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { selectionSchema } from "./config";
+import { continuationGrantSchema, continuationReviewSchema, continuationScopeSchema } from "./continuation";
 
-export const selectionSourceSchema = z.enum(["manual", "issue", "project", "global", "provider"]);
+export const selectionSourceSchema = z.enum(["manual", "issue", "field", "project", "global", "provider"]);
 export const executionPlanSchema = z.object({
   issueId: z.number().int().positive().nullable(), issueIdentifier: z.string().nullable(), projectId: z.string(),
   hostId: z.string().nullable(), hostLabel: z.string().nullable(), repository: z.string(), workspaceId: z.string().nullable(),
@@ -54,18 +55,19 @@ export const readinessSchema = z.object({ checkedAt: z.number(), ready: z.boolea
 export type Readiness = z.infer<typeof readinessSchema>;
 export const rerunRequestSchema = z.object({
   id: z.string().uuid(), sourceKey: z.string(), serverUrl: z.string(), issueId: z.number().int().positive(), projectId: z.string(),
-  operation: z.enum(["rerun", "smoke"]), state: z.enum(["prepared", "submitting", "submitted", "unknown", "failed", "dismissed"]),
+  operation: z.enum(["rerun", "smoke", "continue"]), state: z.enum(["prepared", "submitting", "submitted", "unknown", "failed", "dismissed"]),
   createdAt: z.number(), updatedAt: z.number(), commentId: z.number().int().positive().nullable(), runId: z.number().int().positive().nullable(),
   body: z.string(), planDigest: z.string(), error: z.string().optional(),
   delivery: z.enum(["api", "browser"]).default("browser"),
   requestActorId: z.string().min(1).optional(), executionActorId: z.string().min(1).optional(),
+  continuationScope: continuationScopeSchema.optional(), continuation: continuationGrantSchema.optional(),
   source: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("run") }),
     z.object({ kind: z.literal("issue"), agentId: z.number().int().positive(), actorId: z.string().min(1), username: z.string().min(1) }),
   ]).optional(),
 });
 export type RerunRequest = z.infer<typeof rerunRequestSchema>;
-export const rerunPreviewSchema = z.object({ requestId: z.string().uuid(), sourceKey: z.string(), operation: z.enum(["rerun", "smoke"]), plan: executionPlanSchema, planDigest: z.string(), delivery: z.enum(["api", "browser"]), warnings: z.array(z.string()) });
+export const rerunPreviewSchema = z.object({ requestId: z.string().uuid(), sourceKey: z.string(), operation: z.enum(["rerun", "smoke", "continue"]), plan: executionPlanSchema, planDigest: z.string(), delivery: z.enum(["api", "browser"]), warnings: z.array(z.string()), continuationReview: continuationReviewSchema.optional() });
 export type RerunPreview = z.infer<typeof rerunPreviewSchema>;
 export const rerunResultSchema = z.object({ requestId: z.string().uuid(), state: z.enum(["prepared", "submitted", "unknown", "failed", "dismissed"]), commentId: z.number().int().positive().nullable(), runId: z.number().int().positive().nullable(), message: z.string(), comment: z.string().optional() });
 export type RerunResult = z.infer<typeof rerunResultSchema>;

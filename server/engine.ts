@@ -12,8 +12,11 @@ import { AgentIdentityError, RequestError, isAuthError, isTransientError } from 
 import { resolveProject } from "./projects";
 import type { IntegrationRuntime } from "../shared/experience";
 import type { SessionSnapshot } from "./contracts";
-import { makePlan, resolvePreferences } from "./plan";
+import { executionPreferences, makePlan } from "./plan";
 import { assessAcceptance, nativeSystemPrompt, taskPrompt } from "./task";
+import { assertContinuationGrant, assertSourceNative, captureProvenance, contextRequirementsDigest, executionConfigDigest, factDigest, intentDigest, taskRequirements } from "./continuation";
+import type { ContinuationGrant } from "../shared/continuation";
+import type { TaskContextSnapshot } from "../shared/task-context";
 
 function compatibleSession(session: SessionSnapshot, selection: Selection, previous?: Selection): boolean {
   const unchangedProvider = previous?.provider === selection.provider;
@@ -30,6 +33,41 @@ export function taskKey(serverUrl: string, task: Task): string {
 function agentIdFor(key: string): string {
   const hash = createHash("sha256").update(`paseo-itsaplan:${key}`).digest("hex");
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
+export function issueBranchName(key: string, identifier?: string | null): string {
+  const suffix = createHash("sha256").update(key).digest("hex").slice(0, 24);
+  return identifier && /^[A-Z][A-Z0-9]*-[1-9]\d*$/.test(identifier) ? `${identifier}-itsaplan-${suffix}` : `itsaplan-${suffix}`;
+}
+
+function visibleActivity(event: AgUiEvent, privacy: Config["activityPrivacy"]): AgUiEvent | undefined {
+  if (!privacy || privacy === "off" || !event.type.startsWith("TOOL_CALL_")) return undefined;
+  if (privacy === "full") return event;
+  if (event.type === "TOOL_CALL_ARGS") return undefined;
+  if (event.type === "TOOL_CALL_RESULT") return { ...event, content: "[Tool result withheld by activity privacy]" };
+  return event;
+}
+
+function redactActivity(event: AgUiEvent, secrets: Secrets): AgUiEvent {
+  const credentials = Object.values(secrets).filter((value): value is string => Boolean(value)).sort((a, b) => b.length - a.length);
+  const redact = (text: string) => {
+    for (const credential of credentials) {
+      text = text.replaceAll(credential, "[redacted]");
+      const encoded = JSON.stringify(credential).slice(1, -1);
+      if (encoded !== credential) text = text.replaceAll(encoded, "[redacted]");
+    }
+    return text;
+  };
+  switch (event.type) {
+    case "TOOL_CALL_START": return { ...event, toolCallId: redact(event.toolCallId), toolCallName: redact(event.toolCallName).slice(0, 200), ...(event.parentMessageId ? { parentMessageId: redact(event.parentMessageId) } : {}) };
+    case "TOOL_CALL_ARGS": return { ...event, toolCallId: redact(event.toolCallId), delta: redact(event.delta) };
+    case "TOOL_CALL_END": return { ...event, toolCallId: redact(event.toolCallId) };
+    case "TOOL_CALL_RESULT": {
+      const content = redact(event.content);
+      const suffix = "\n[Tool result truncated to the 12,000-character event limit]";
+      return { ...event, toolCallId: redact(event.toolCallId), messageId: redact(event.messageId), content: content.length > 12000 ? content.slice(0, 12000 - suffix.length) + suffix : content };
+    }
+    default: return event;
+  }
 }
 export function safeError(error: unknown): string {
   if (error instanceof AgentIdentityError) return error.message;
@@ -62,6 +100,7 @@ export class Engine {
   private interrupting = false;
   private draining = false;
   private started = false;
+  private admissionEpoch = 0;
   private lastPollAt: number | null = null;
   private maintenance: NodeJS.Timeout | undefined;
   private reporting = false;
@@ -100,6 +139,7 @@ export class Engine {
   }
 
   updateConfiguration(config: Config, secrets = this.secrets): void {
+    this.admissionEpoch++;
     this.config = config;
     this.secrets = secrets;
     this.refreshClaims();
@@ -166,6 +206,7 @@ export class Engine {
     while (!signal.aborted && await this.reserve(signal)) {
       const config = structuredClone(this.config);
       const secrets = { ...this.secrets };
+      const admissionEpoch = this.admissionEpoch;
       let empty = false;
       let delay = config.pollIntervalMs;
       try {
@@ -178,7 +219,7 @@ export class Engine {
         if (item) {
           const task: Task = kind === "run" ? { kind, run: item as Extract<Task, { kind: "run" }>["run"] } : { kind, message: item as Extract<Task, { kind: "chat" }>["message"] };
           // A claim can settle just as shutdown begins. Persist/report it; never discard.
-          this.launch(task, config, secrets);
+          this.launch(task, config, secrets, admissionEpoch);
         } else { empty = true; }
         if (!signal.aborted) {
           this.state = "connected";
@@ -211,7 +252,7 @@ export class Engine {
     }
   }
 
-  private launch(task: Task, config = structuredClone(this.config), secrets = { ...this.secrets }): Promise<void> {
+  private launch(task: Task, config = structuredClone(this.config), secrets = { ...this.secrets }, admissionEpoch = this.admissionEpoch): Promise<void> {
     const key = taskKey(config.serverUrl, task);
     const running = this.active.get(key);
     if (running) return running.done;
@@ -223,7 +264,7 @@ export class Engine {
     if (this.stopping || this.interrupting || halted) stop.abort(new ExecutionStop(this.stopping ? "Plugin stopped; session preserved" : "Execution stopped before prompt acceptance; session preserved"));
     const active: Active = { stop, clear: () => {}, done: Promise.resolve() };
     this.active.set(key, active);
-    active.done = this.execute(task, key, active, config, secrets).catch(() => {
+    active.done = this.execute(task, key, active, config, secrets, admissionEpoch).catch(() => {
       this.storageFailed(new StorageError("Execution journal unavailable"));
     }).finally(() => { active.clear(); this.active.delete(key); this.notify(); });
     return active.done;
@@ -232,7 +273,7 @@ export class Engine {
   /** Accept only server-claimed tasks. This method is also the deterministic integration test seam. */
   dispatch(task: Task): Promise<void> { return this.launch(task); }
 
-  private async execute(task: Task, key: string, active: Active, config: Config, secrets: Secrets): Promise<void> {
+  private async execute(task: Task, key: string, active: Active, config: Config, secrets: Secrets, admissionEpoch: number): Promise<void> {
     const { stop } = active;
     let record = this.journal.get(key);
     const resumed = Boolean(record);
@@ -241,13 +282,17 @@ export class Engine {
     let safety: NodeJS.Timeout | undefined;
     let flushing: NodeJS.Timeout | undefined;
     let ownsAgentLock = false;
-    let sessionOwned = Boolean(record?.cwd && ["sending", "running", "stopping", "uncertain"].includes(record.phase));
+    let sessionOwned = Boolean(!record?.continuation && record?.cwd && ["sending", "running", "stopping", "uncertain"].includes(record.phase));
     let beatInFlight = false;
     let leaseLost = false;
     let remotelyCanceled = false;
     let cancelPromise: Promise<void> | undefined;
     let cancellationUnconfirmed = false;
     let intentClaim: string | undefined;
+    let releaseObservation: (() => Promise<void>) | undefined;
+    let continuation: ContinuationGrant | undefined = record?.continuation;
+    const activityIds = new Set(record?.activityEventIds ?? []);
+    let streamedTextLength = record?.streamedTextLength ?? 0;
     let events: AgUiEvent[] = record?.pendingEvents ?? [];
     let sending = Promise.resolve();
     const threadId = task.kind === "chat" ? task.message.threadId : `run-${task.run.id}`;
@@ -255,7 +300,7 @@ export class Engine {
     const messageId = `paseo-${key}`;
     const persist = async (patch: Partial<SessionRecord>) => {
       if (!record) throw new Error("Execution journal record missing");
-      record = { ...record, ...patch, updatedAt: Date.now() };
+      record = { ...record, ...patch, activityEventIds: [...activityIds], streamedTextLength, updatedAt: Date.now() };
       await this.journal.put(record);
     };
     const clear = () => { clearInterval(heartbeat); clearInterval(flushing); clearTimeout(deadline); clearTimeout(safety); };
@@ -387,10 +432,15 @@ export class Engine {
       const intent = task.kind === "run" ? record.intent ?? await this.protocol.intent(task.run, issue, stop.signal, (id) => this.journal.request(id)) : undefined;
       if (intent?.requestId) {
         const request = this.journal.request(intent.requestId);
-        if (request?.source?.kind === "issue" || intent.source === "smoke" && intent.sourceRunId === externalId) {
+        if (request?.source?.kind === "issue" || request?.operation === "continue" || intent.source === "smoke" && intent.sourceRunId === externalId) {
           if (task.kind !== "run") throw new ExecutionStop("Issue-origin smoke requires an authoritative claimed run");
           const verified = await this.protocol.intent(task.run, issue, stop.signal, (id) => this.journal.request(id));
           if (verified.version !== intent.version || verified.source !== intent.source || verified.request !== intent.request || verified.projectId !== intent.projectId || verified.sourceRunId !== intent.sourceRunId || verified.requestId !== intent.requestId || verified.acceptance?.expectedOutput !== intent.acceptance?.expectedOutput || verified.acceptance?.noTools !== intent.acceptance?.noTools) throw new ExecutionStop("The persisted smoke intent no longer matches its durable request");
+        }
+        if (request?.operation === "continue") {
+          if (!config.continuation?.enabled || !request.continuation || request.continuation.requestId !== intent.requestId) throw new ExecutionStop("This continuation has no approved durable scope grant");
+          if (this.journal.records().some((prior) => prior.serverUrl === config.serverUrl && prior.externalId === externalId && prior.intent?.requestId === intent.requestId && prior.attempt < record!.attempt)) throw new ExecutionStop("A continuation retry requires a new reviewed request; an earlier attempt cannot transfer its approval");
+          continuation = request.continuation;
         }
         const claim = `${config.serverUrl}:${intent.requestId}`;
         const owner = this.intentClaims.get(claim);
@@ -413,19 +463,71 @@ export class Engine {
       }
       const boundMapping = boundRecord?.projectMapping;
       const project = record.projectMapping ?? (boundMapping ? { ...config.projects[projectId]!, repository: boundMapping.repository, workspaceId: boundMapping.workspaceId } : await resolveProject(config, this.protocol, this.gateway, projectId, stop.signal));
-      const override = issue ? config.issueOverrides[String(issue.id)] : undefined;
-      const preferences = resolvePreferences(config, project, override);
+      const preferences = await executionPreferences(this.protocol, config, project, issue, {}, stop.signal);
       const selection = record.plan?.selection ?? await this.gateway.select(config, project, preferences.selection);
       if (!record.plan) await persist({ projectId, projectMapping: project, intent,
-        plan: makePlan(config, project, selection, { projectId, issueId: issue?.id ?? null, issueIdentifier: issue?.identifier ?? null, host: await this.gateway.host(), override }) });
+        plan: makePlan(config, project, selection, { projectId, issueId: issue?.id ?? null, issueIdentifier: issue?.identifier ?? null, host: await this.gateway.host(), sources: preferences.sources }) });
       stop.signal.throwIfAborted();
+      const verifyContinuation = async () => {
+        if (!continuation || !intent?.requestId || task.kind !== "run" || !issue) throw new ExecutionStop("Continuation source scope is unavailable");
+        const request = this.journal.request(intent.requestId);
+        const source = this.journal.get(continuation.sourceKey);
+        if (!source || !request || request.operation !== "continue" || !request.continuation || factDigest(request.continuation) !== factDigest(continuation) || request.sourceKey !== source.key || request.issueId !== issue.id || request.projectId !== projectId || request.executionActorId !== continuation.executionActorId || request.runId !== null && request.runId !== task.run.id || !["unknown", "submitted", "submitting"].includes(request.state)) throw new ExecutionStop("The durable continuation request changed or belongs to another execution");
+        assertContinuationGrant(source, continuation, intent.requestId);
+        const actor = await this.protocol.identity(stop.signal);
+        stop.signal.throwIfAborted();
+        const currentIssue = await this.protocol.issue(issue.id, stop.signal);
+        if (!this.config.projects[projectId]) throw new ExecutionStop("The continuation project is no longer configured");
+        const currentProject = await resolveProject(this.config, this.protocol, this.gateway, projectId, stop.signal);
+        if (currentProject.repository !== source.projectMapping!.repository || currentProject.workspaceId !== source.projectMapping!.workspaceId) throw new ExecutionStop("The continuation repository mapping changed");
+        const currentPreferences = await executionPreferences(this.protocol, this.config, currentProject, currentIssue, {}, stop.signal);
+        const currentSelection = await this.gateway.select(this.config, currentProject, currentPreferences.selection);
+        if (source.taskContext) {
+          const currentContext = await this.protocol.context(currentIssue, currentProject, stop.signal);
+          if (contextRequirementsDigest(currentContext) !== contextRequirementsDigest(source.taskContext)) throw new ExecutionStop("The continuation's optional requirements or attachments changed or could not be verified");
+        }
+        try { await this.protocol.heartbeat(task.run.id, task.run.attempts, stop.signal); }
+        catch (error) {
+          if (isAuthError(error) || error instanceof RequestError && [404, 409].includes(error.status)) throw new ExecutionStop("Continuation execution lease rejected", "lease-lost");
+          throw error;
+        }
+        const latestActor = await this.protocol.identity(stop.signal);
+        const latestIssue = await this.protocol.issue(issue.id, stop.signal);
+        const currentIntent = await this.protocol.intent(task.run, latestIssue, stop.signal, (id) => this.journal.request(id));
+        const sourceRun = await this.protocol.getRun(source.externalId, stop.signal);
+        const native = await this.gateway.inspect(source.agentId, { includeHistory: false });
+        stop.signal.throwIfAborted();
+        const latestSource = this.journal.get(source.key);
+        const latestRequest = this.journal.request(intent.requestId);
+        if (!latestSource || !latestRequest || latestRequest.operation !== "continue" || factDigest(latestRequest.continuation) !== factDigest(continuation) || latestRequest.executionActorId !== continuation.executionActorId || latestRequest.body !== request.body || !["unknown", "submitted", "submitting"].includes(latestRequest.state) || latestRequest.runId !== null && latestRequest.runId !== task.run.id) throw new ExecutionStop("The continuation source or durable grant changed during admission");
+        assertContinuationGrant(latestSource, continuation, intent.requestId);
+        if (!sourceRun || sourceRun.executionState !== "success" || sourceRun.status !== "success" || sourceRun.attempts !== source.attempt || sourceRun.issueId !== source.issueId || sourceRun.projectId !== source.projectId || sourceRun.username !== latestActor.username) throw new ExecutionStop("The authoritative continuation source is no longer successful or belongs to another scope");
+        if (!this.config.continuation?.enabled || !actor.isAgent || !latestActor.isAgent || actor.id !== continuation.executionActorId || latestActor.id !== actor.id || executionConfigDigest(this.config, projectId, issue.id) !== continuation.configDigest || factDigest(taskRequirements(latestIssue, source.taskContext)) !== continuation.requirementsDigest || intentDigest(currentIntent) !== continuation.taskDigest || factDigest(task.run.systemPrompt) !== continuation.systemDigest || factDigest(currentSelection) !== factDigest(source.plan!.selection) || factDigest(selection) !== factDigest(currentSelection)) throw new ExecutionStop("Continuation actor, task, requirements, configuration, or execution selection changed");
+        assertSourceNative(source, native);
+        return { source, native };
+      };
+      if (continuation && record.phase === "preparing") {
+        const { source, native } = await verifyContinuation();
+        await persist({ continuation, agentId: native.id, workspaceId: native.workspaceId, cwd: native.cwd, provider: native.provider, model: native.model, modeId: native.modeId, taskContext: source.taskContext, taskIssue: source.taskIssue, taskProvenance: source.taskProvenance, branchName: source.branchName, phase: "created" });
+      }
+      if (task.kind === "run" && issue && intent && intent.source !== "smoke" && record.phase === "preparing") {
+        let context = record.taskContext;
+        if (project.taskContext?.enabled && !context) {
+          const collected = await this.protocol.context(issue, project, stop.signal);
+          context = await this.journal.cacheTaskContext(collected);
+          await persist({ taskContext: context });
+        }
+        const actor = await this.protocol.identity(stop.signal);
+        stop.signal.throwIfAborted();
+        await persist({ taskIssue: issue, ...(actor.isAgent ? { taskProvenance: captureProvenance(config, actor.id, intent, task.run.systemPrompt, issue, context) } : {}) });
+      }
       if (task.kind === "chat" && task.message.sessionId && (!binding || task.message.sessionId !== binding.agentId)) throw new ExecutionStop("Unknown chat session; restore the original thread binding from backup or start a new It's a Plan chat thread");
       if (record.phase === "preparing") {
         // Cancel an older lease before resuming its session/worktree. No two attempts
         // may knowingly mutate a repository through this integration at once.
         if (task.kind === "run") {
           const prior = this.journal.records().filter((item) => item.serverUrl === record!.serverUrl && item.kind === "run" && item.externalId === record!.externalId && item.attempt < record!.attempt).sort((a, b) => b.attempt - a.attempt)[0];
-          if (prior?.agentId) {
+          if (prior?.agentId && !terminal[prior.phase]) {
             const earlier = this.active.get(prior.key);
             earlier?.stop.abort(new ExecutionStop("Superseded by a newer execution attempt", "lease-lost"));
             try {
@@ -438,9 +540,6 @@ export class Engine {
               this.claims.abort();
               throw new ExecutionStop("Previous execution is still unconfirmed; a new coding session will not be started");
             }
-            const session = await this.gateway.inspect(prior.agentId);
-            const sameRepository = prior.projectMapping ? prior.projectMapping.repository === project.repository : prior.cwd === project.repository;
-            if (session && compatibleSession(session, selection) && !session.active && prior.projectId === projectId && sameRepository) await persist({ agentId: prior.agentId });
           }
         }
         if (binding) {
@@ -451,8 +550,9 @@ export class Engine {
         }
         const known = record.agentId !== agentIdFor(key) ? await this.gateway.inspect(record.agentId) : null;
         if (record.agentId !== agentIdFor(key) && (!known || !compatibleSession(known, selection, binding?.agentId === known.id ? boundRecord?.plan?.selection : undefined))) throw new ExecutionStop("Mapped Paseo session selection changed before reuse");
-        const session = known ?? await this.gateway.create({ key, agentId: record.agentId, title: issue?.identifier ?? `It's a Plan chat ${externalId}`, project, selection,
-          systemPrompt: nativeSystemPrompt(task.kind === "run" ? task.run.systemPrompt : task.message.systemPrompt), config, mcpToken: secrets.mcpToken, issueId: issue?.id ?? null });
+        if (!known && !record.branchName) await persist({ branchName: issueBranchName(key, resumed ? null : issue?.identifier) });
+        const session = known ?? await this.gateway.create({ key, agentId: record.agentId, title: issue?.identifier ?? (task.kind === "run" ? `It's a Plan ${task.run.trigger} run ${externalId}` : `It's a Plan chat ${externalId}`), project, selection,
+          systemPrompt: nativeSystemPrompt(task.kind === "run" ? task.run.systemPrompt : task.message.systemPrompt), config, mcpToken: secrets.mcpToken, issueId: issue?.id ?? null, branchName: record.branchName });
         sessionOwned = !known;
         await persist({ projectId, agentId: session.id, workspaceId: session.workspaceId, cwd: session.cwd, provider: session.provider, model: session.model, modeId: session.modeId, pendingPermissionCount: session.pendingPermissionCount, phase: "created", issueId: issue?.id ?? record.issueId, issueIdentifier: issue?.identifier ?? record.issueIdentifier });
         if (task.kind === "chat") await this.journal.bindThread(task.message.threadId, { agentId: record.agentId, projectId });
@@ -464,16 +564,20 @@ export class Engine {
       stop.signal.throwIfAborted();
       this.agentLocks.add(record.agentId);
       ownsAgentLock = true;
-      sessionOwned = true;
+      if (record.phase === "created" || continuation) sessionOwned = false;
       const snapshot = await this.gateway.inspect(record.agentId);
       if (!snapshot || snapshot.archived) {
         sessionOwned = false;
         throw new ExecutionStop("Paseo session is missing or archived");
       }
       stop.signal.throwIfAborted();
-      if (record.phase === "created" && (snapshot.active || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId)) {
+      if (record.phase === "created" && (snapshot.active || snapshot.pendingPermissionCount > 0 || snapshot.id !== record.agentId || snapshot.cwd !== record.cwd || snapshot.workspaceId !== record.workspaceId || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId)) {
         sessionOwned = false;
         throw new ExecutionStop("Native session is busy or its model/mode changed; refusing to interrupt it");
+      }
+      if (continuation && resumed && ["sending", "running"].includes(record.phase)) {
+        if (!record.nativeLastUserMessageAt || snapshot.lastUserMessageAt !== record.nativeLastUserMessageAt || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId || snapshot.cwd !== record.cwd || snapshot.workspaceId !== record.workspaceId) throw new ExecutionStop("The interrupted continuation's native turn cannot be verified; no prompt was replayed or session interrupted");
+        sessionOwned = snapshot.active;
       }
       await persist({ provider: snapshot.provider, model: snapshot.model, modeId: snapshot.modeId, pendingPermissionCount: snapshot.pendingPermissionCount });
       if (resumed && ["sending", "running"].includes(record.phase) && !snapshot.active) {
@@ -483,13 +587,31 @@ export class Engine {
         await this.report(record);
         return;
       }
-      events.push({ type: "RUN_STARTED", threadId, runId: String(externalId) }, { type: "TEXT_MESSAGE_START", messageId, role: "assistant" });
+      if (record.eventOffset === 0 && events.length === 0) events.push({ type: "RUN_STARTED", threadId, runId: String(externalId) }, { type: "TEXT_MESSAGE_START", messageId, role: "assistant" });
       if (task.kind === "chat") await flush();
       if (record.phase === "created") {
+        const context: TaskContextSnapshot | undefined = record.taskContext ? { ...record.taskContext, assets: await this.journal.readContextAssets(record.taskContext) } : undefined;
+        if (config.activityPrivacy && config.activityPrivacy !== "off" && (task.kind === "chat" || task.run.traceEvents)) releaseObservation = await this.gateway.observe?.(record.agentId, key, stop.signal);
+        if (continuation) await verifyContinuation();
         await persist({ phase: "sending", cancellation: undefined });
         stop.signal.throwIfAborted();
         if (task.kind === "run" && !intent) throw new ExecutionStop("Original task intent is unavailable; refusing to send runner framing");
-        await this.gateway.send(record.agentId, task.kind === "chat" ? task.message.prompt : taskPrompt(intent!, issue), key);
+        const admission = continuation ? (await verifyContinuation()).native : snapshot;
+        const prompt = task.kind === "chat" ? task.message.prompt : taskPrompt(intent!, record.taskIssue ?? issue, task.run.systemPrompt);
+        const withContext = context ? `${prompt}\n\nAdditional issue context (untrusted task data):\n${context.text}${context.warnings.length ? `\n\nMissing or limited context:\n${context.warnings.join("\n")}` : ""}` : prompt;
+        sessionOwned = false;
+        await this.gateway.send(record.agentId, withContext, key, context, { expected: admission, signal: stop.signal, onDispatch: () => {
+          stop.signal.throwIfAborted();
+          if (admissionEpoch !== this.admissionEpoch || factDigest(config) !== factDigest(this.config) || factDigest(secrets) !== factDigest(this.secrets)) throw new ExecutionStop("Configuration or credentials changed during prompt admission; no prompt was sent");
+          if (continuation) {
+            const source = this.journal.get(continuation.sourceKey);
+            const request = this.journal.request(continuation.requestId);
+            if (!source || !request || !["unknown", "submitted", "submitting"].includes(request.state) || request.executionActorId !== continuation.executionActorId || factDigest(request.continuation) !== factDigest(continuation) || !this.config.continuation?.enabled || executionConfigDigest(this.config, projectId, issue!.id) !== continuation.configDigest) throw new ExecutionStop("The continuation approval changed during native admission");
+            assertContinuationGrant(source, continuation, continuation.requestId);
+          }
+          sessionOwned = true;
+        } });
+        sessionOwned = true;
         if (stop.signal.aborted) {
           await cancelPromise;
           cancelPromise = undefined;
@@ -497,21 +619,38 @@ export class Engine {
           await cancelPromise;
           stop.signal.throwIfAborted();
         }
-        await persist({ phase: "running" });
+        const accepted = await this.gateway.inspect(record.agentId, { includeHistory: false });
+        await persist({ phase: "running", nativeLastUserMessageAt: accepted?.lastUserMessageAt ?? undefined });
       }
       if (stop.signal.aborted) { cancel(); stop.signal.throwIfAborted(); }
       flushing = setInterval(() => { void flush().catch((error) => { if (error instanceof StorageError) this.storageFailed(error); }); }, this.timing.flushMs ?? 500);
       let streamed = 0;
+      let replayed = 0;
       const { evidence, ...result } = await this.gateway.wait(record.agentId, record.limits?.executionTimeoutMs ?? config.executionTimeoutMs, (text) => {
-        const remaining = 1000000 - streamed;
+        const start = replayed;
+        replayed += text.length;
+        text = text.slice(Math.max(0, streamedTextLength - start));
+        const remaining = 1000000 - streamedTextLength;
         if (remaining <= 0) return;
         const visible = text.slice(0, remaining);
         streamed += visible.length;
+        streamedTextLength += visible.length;
         for (let start = 0; start < visible.length; start += 12000) events.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: visible.slice(start, start + 12000) });
         if (streamed === 1000000) events.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: "\n[Live trace truncated at 1,000,000 characters; full conversation remains in Paseo.]" });
-      }, stop.signal, key);
+      }, stop.signal, key, config.activityPrivacy && config.activityPrivacy !== "off" && (task.kind === "chat" || task.run.traceEvents) ? (event) => {
+        if (stop.signal.aborted) return;
+        const id = factDigest(event);
+        if (activityIds.has(id)) return;
+        const visible = visibleActivity(event, config.activityPrivacy);
+        if (!visible) return;
+        activityIds.add(id);
+        const redacted = redactActivity(visible, secrets);
+        if (redacted.type === "TOOL_CALL_ARGS") {
+          for (let start = 0; start < redacted.delta.length; start += 12000) events.push({ ...redacted, delta: redacted.delta.slice(start, start + 12000) });
+        } else events.push(redacted);
+      } : undefined);
       stop.signal.throwIfAborted();
-      if (streamed === 0 && result.output) for (let start = 0; start < Math.min(result.output.length, 1000000); start += 12000) events.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: result.output.slice(start, start + 12000) });
+      if (streamedTextLength === 0 && result.output) for (let start = 0; start < Math.min(result.output.length, 1000000); start += 12000) events.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: result.output.slice(start, start + 12000) });
       events.push({ type: "TEXT_MESSAGE_END", messageId }, result.status === "success" ? { type: "RUN_FINISHED", threadId, runId: String(externalId) } : { type: "RUN_ERROR", message: result.error ?? "Agent execution failed" });
       clearInterval(flushing);
       await sending;
@@ -549,6 +688,7 @@ export class Engine {
     } finally {
       clear();
       stop.signal.removeEventListener("abort", cancel);
+      await releaseObservation?.();
       if (intentClaim && this.intentClaims.get(intentClaim) === externalId) this.intentClaims.delete(intentClaim);
       if (record && ownsAgentLock) this.agentLocks.delete(record.agentId);
     }
@@ -697,35 +837,38 @@ export class Engine {
     if (this.stopping || this.interrupting) throw new ConfigurationError("Execution is stopping; wait before starting a new session");
     const config = structuredClone(this.config);
     const secrets = { ...this.secrets };
+    const admissionEpoch = this.admissionEpoch;
     const key = `manual:${randomUUID()}`;
     const stop = new AbortController();
     const active: Active = { stop, done: Promise.resolve(), clear() {} };
     this.active.set(key, active);
     let record: SessionRecord | undefined;
+    let dispatched = false;
     const operation = (async () => {
       try {
         const projectId = String(issue.projectId);
         const project = await resolveProject(config, this.protocol, gateway, projectId, stop.signal);
-        const issueOverride = config.issueOverrides[String(issue.id)] ?? {};
-        const issuePreferences = resolvePreferences(config, project, issueOverride);
-        const explicit = Object.values(override).some((value) => value !== undefined);
-        const effectiveProject = explicit ? { ...project, ...issuePreferences.selection } : project;
-        const preferences = explicit ? override : issueOverride;
-        const selection = await gateway.select(config, effectiveProject, preferences);
-        const plan = makePlan(config, effectiveProject, selection, { projectId, issueId: issue.id, issueIdentifier: issue.identifier, host: await gateway.host(), override: preferences, overrideSource: explicit ? "manual" : "issue" });
-        if (explicit) for (const field of ["provider", "model", "mode"] as const) {
-          if (plan.sources[field] === "project") plan.sources[field] = issuePreferences.sources[field];
-        }
+        const preferences = await executionPreferences(this.protocol, config, project, issue, override, stop.signal);
+        const selection = await gateway.select(config, project, preferences.selection);
+        const plan = makePlan(config, project, selection, { projectId, issueId: issue.id, issueIdentifier: issue.identifier, host: await gateway.host(), sources: preferences.sources });
         stop.signal.throwIfAborted();
         const now = Date.now();
-        record = { key, kind: "manual", serverUrl: config.serverUrl, externalId: 0, attempt: 0, issueId: issue.id, issueIdentifier: issue.identifier, projectId, projectMapping: project, plan, agentId: agentIdFor(key), workspaceId: null, cwd: "", provider: selection.provider, phase: "preparing", createdAt: now, updatedAt: now, eventOffset: 0 };
+        const taskContext = project.taskContext?.enabled ? await this.journal.cacheTaskContext(await this.protocol.context(issue, project, stop.signal)) : undefined;
+        record = { key, kind: "manual", serverUrl: config.serverUrl, externalId: 0, attempt: 0, issueId: issue.id, issueIdentifier: issue.identifier, projectId, projectMapping: project, plan, taskIssue: issue, taskContext, branchName: issueBranchName(key, issue.identifier), agentId: agentIdFor(key), workspaceId: null, cwd: "", provider: selection.provider, phase: "preparing", createdAt: now, updatedAt: now, eventOffset: 0 };
         await this.journal.put(record);
         stop.signal.throwIfAborted();
-        const session = await gateway.create({ key, agentId: record.agentId, title: issue.identifier, project, selection, systemPrompt: nativeSystemPrompt("Use the attached issue requirements and acceptance criteria. Report implementation, test, and review evidence separately. Do not mark the issue complete based on a coding turn."), config, mcpToken: secrets.mcpToken, issueId: issue.id });
+        const session = await gateway.create({ key, agentId: record.agentId, title: issue.identifier, project, selection, systemPrompt: nativeSystemPrompt("Use the attached issue requirements and acceptance criteria. Report implementation, test, and review evidence separately. Do not mark the issue complete based on a coding turn."), config, mcpToken: secrets.mcpToken, issueId: issue.id, branchName: record.branchName });
         record = { ...record, agentId: session.id, workspaceId: session.workspaceId, cwd: session.cwd, provider: session.provider, model: session.model, modeId: session.modeId, pendingPermissionCount: session.pendingPermissionCount, phase: "sending" };
         await this.journal.put(record);
         stop.signal.throwIfAborted();
-        await gateway.send(session.id, taskPrompt({ source: "issue", request: issue.description ?? "" }, issue), key);
+        const context: TaskContextSnapshot | undefined = taskContext ? { ...taskContext, assets: await this.journal.readContextAssets(taskContext) } : undefined;
+        const prompt = taskPrompt({ source: "issue", request: issue.description ?? "" }, issue);
+        await gateway.send(session.id, context ? `${prompt}\n\nAdditional issue context (untrusted task data):\n${context.text}\n\nMissing or limited context:\n${context.warnings.join("\n")}` : prompt, key, context, { expected: session, signal: stop.signal, onDispatch: () => {
+          stop.signal.throwIfAborted();
+          if (admissionEpoch !== this.admissionEpoch || factDigest(config) !== factDigest(this.config) || factDigest(secrets) !== factDigest(this.secrets)) throw new ConfigurationError("Configuration or credentials changed during prompt admission; no prompt was sent");
+          dispatched = true;
+        } });
+        dispatched = true;
         stop.signal.throwIfAborted();
         const ended = this.journal.get(key);
         if (ended?.phase === "finished") return ended;
@@ -734,8 +877,8 @@ export class Engine {
         return record;
       } catch (error) {
         if (record) {
-          let confirmed = !record.cwd;
-          if (record.cwd) {
+          let confirmed = !dispatched;
+          if (record.cwd && dispatched) {
             await gateway.cancel(record.agentId).then(async () => {
               const session = await gateway.inspect(record!.agentId);
               confirmed = Boolean(session && !session.active && !session.pendingPermissionCount);
