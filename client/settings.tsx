@@ -1,0 +1,142 @@
+import { useCallback, useEffect, useState } from "react";
+import { openExternalUrl, useRpc, useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
+import { Loading, SettingsAction, SettingsCard, SettingsInput, SettingsSection, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
+import { configSchema, preferences, type Config } from "../shared/config";
+import type { Readiness } from "../shared/experience";
+import { projectsRpc, providersRpc } from "../shared/rpc";
+import { configurationError, Feedback, ProviderErrors, RefreshButton, SelectionFields, useAction, useResource } from "./common";
+import { advancedPanels, AdvancedEditor, type AdvancedPanel } from "./advanced";
+import { CredentialField } from "./credentials";
+import { ReadinessPanel, type ReadinessAction } from "./experience";
+import { ProjectRepositories } from "./projects";
+import { BackLink, NavigationRow } from "./navigation";
+import { DelegationTestSetup } from "./smoke";
+
+export function SettingsScreen(props: PluginSurfaceProps & { openExecutions(): void }) {
+  const settings = useSettings(preferences);
+  const action = useAction();
+  if (settings.status === "loading") return <Loading />;
+  if (settings.status !== "ready") return <SettingsSection title="Configuration" info="Existing settings are preserved when loading fails. Reset replaces an invalid document; credentials are kept.">
+    <SettingsCard>
+      <SettingsAction label="Saved settings" actionLabel="Reload" disabled={action.pending} onPress={() => { void action.run(async () => { await settings.reload(); }); }} />
+      {settings.status === "invalid" && <SettingsAction label="Invalid configuration" actionLabel="Reset" disabled={settings.saving || action.pending} onPress={() => { void action.run(async () => { await settings.reset(); }); }} />}
+    </SettingsCard>
+    <Feedback theme={props.theme} error={settings.error || settings.saveError || action.error} />
+  </SettingsSection>;
+  return <SettingsEditor {...props} settings={settings} />;
+}
+
+type ReadySettings = Extract<SettingsState<typeof configSchema>, { status: "ready" }>;
+type Detail = "connection" | "execution" | "projects" | "requests" | "advanced" | "checks";
+const panels = ["polling", "chat", "overrides", "policies", "mcp"] as const;
+
+function SettingsEditor({ settings, openExecutions, ...props }: PluginSurfaceProps & { settings: ReadySettings; openExecutions(): void }) {
+  const [draft, setDraft] = useState<{ values: Config; revision: string }>({ values: settings.values, revision: settings.revision });
+  const [formVersion, setFormVersion] = useState(0);
+  const [savedRevision, setSavedRevision] = useState<string | null>(null);
+  const [panel, setPanel] = useState<AdvancedPanel | null>(null);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [projectId, setProjectId] = useState<string>();
+  const [readiness, setReadiness] = useState<{ revision: string; value: Readiness }>();
+  const [testOpen, setTestOpen] = useState(false);
+  const action = useAction();
+  const toast = useToast();
+  const providers = useRpc(providersRpc);
+  const projects = useRpc(projectsRpc);
+  const needsProviders = detail === "execution" || panel !== null;
+  const needsProjects = detail === "projects" || panel !== null;
+  const loadProviders = useCallback(() => needsProviders ? providers({}) : Promise.resolve([]), [providers, needsProviders]);
+  const loadProjects = useCallback(() => needsProjects && settings.values.serverUrl ? projects({}) : Promise.resolve([]), [projects, needsProjects, settings.values.serverUrl]);
+  const catalog = useResource(loadProviders);
+  const availableProjects = useResource(loadProjects);
+  const values = draft.values;
+  const disabled = settings.saving || savedRevision !== null;
+  const dirty = JSON.stringify(values) !== JSON.stringify(settings.values);
+  const conflict = settings.revision !== draft.revision && savedRevision === null;
+  const set = (patch: Partial<Config>) => setDraft((current) => ({ ...current, values: { ...current.values, ...patch } }));
+  const replaceDraft = (next: Config, revision: string) => { setDraft({ values: next, revision }); setFormVersion((value) => value + 1); };
+  useEffect(() => {
+    if (savedRevision !== null && settings.revision !== savedRevision) {
+      setDraft({ values: settings.values, revision: settings.revision });
+      setFormVersion((value) => value + 1);
+      setSavedRevision(null);
+      setReadiness(undefined);
+    }
+  }, [savedRevision, settings.revision, settings.values]);
+  const navigate = (target: ReadinessAction) => {
+    if (target.kind === "agent" && (settings.values.webUrl || settings.values.serverUrl)) {
+      const base = (settings.values.webUrl || settings.values.serverUrl).replace(/\/+$/, "");
+      void action.run(() => openExternalUrl(base + (target.externalPath || "")));
+    } else if (target.kind === "host") { setDetail("connection"); setPanel("host"); }
+    else if (target.kind === "execution") setDetail("execution");
+    else if (target.kind === "project" || target.kind === "projects") { setProjectId(target.projectId); setDetail("projects"); }
+    else setDetail("connection");
+  };
+  const validationError = configurationError(values);
+  const summaries: Record<(typeof panels)[number], string> = {
+    polling: `Every ${values.pollIntervalMs / 1000} seconds`,
+    chat: `${Object.keys(values.chatProjects).length} threads`,
+    overrides: `${Object.keys(values.issueOverrides).length} issues`,
+    policies: `${Object.keys(values.statusPolicy).length} destinations`,
+    mcp: values.mcp.enabled ? "Enabled" : "Disabled",
+  };
+  if (panel) return <AdvancedEditor key={`${panel}-${formVersion}`} {...props} panel={panel} config={values} projects={availableProjects.data || []} providers={catalog.data || []} disabled={disabled} onClose={() => setPanel(null)} onApply={(next) => { setDraft((current) => ({ ...current, values: next })); setPanel(null); }} />;
+  if (testOpen) return <DelegationTestSetup {...props} config={settings.values} draftDirty={dirty || conflict || disabled} onClose={() => setTestOpen(false)} onChange={() => setReadiness(undefined)} />;
+  return <>
+    {!detail && <SettingsSection title="Settings">
+      <SettingsCard>
+        <NavigationRow theme={props.theme} label="Connection" hint={values.serverUrl || "Not configured"} onPress={() => setDetail("connection")} />
+        <NavigationRow theme={props.theme} label="Projects" hint={`${Object.keys(values.projects).length} configured`} onPress={() => { setProjectId(undefined); setDetail("projects"); }} />
+        <NavigationRow theme={props.theme} label="Execution" hint={values.automatic ? "Automatic delegation enabled" : "Automatic delegation disabled"} onPress={() => setDetail("execution")} />
+        <NavigationRow theme={props.theme} label="Advanced" onPress={() => setDetail("advanced")} />
+      </SettingsCard>
+    </SettingsSection>}
+    {!detail && <SettingsSection title="Review">
+      <SettingsCard>
+        <NavigationRow theme={props.theme} label="Setup checks" hint="Readiness, queue preview and test delegation" onPress={() => setDetail("checks")} />
+        <NavigationRow theme={props.theme} label="Executions" hint={dirty || conflict ? "Save or discard changes before leaving settings" : "Active work, history and runtime controls"} disabled={dirty || conflict || disabled} onPress={openExecutions} />
+      </SettingsCard>
+    </SettingsSection>}
+    {detail && <BackLink theme={props.theme} label={detail === "requests" ? "Advanced" : "Settings"} onPress={() => setDetail(detail === "requests" ? "advanced" : null)} />}
+    {detail === "checks" && <ReadinessPanel key={settings.revision} {...props} onNavigate={navigate} onResult={(value) => setReadiness({ revision: settings.revision, value })} draftDirty={dirty || conflict || disabled} onTestDelegation={() => setTestOpen(true)} />}
+    {detail === "advanced" && <SettingsSection title="Advanced">
+      <SettingsCard>
+        {panels.map((id) => <NavigationRow key={id} theme={props.theme} label={advancedPanels[id]} hint={summaries[id]} disabled={disabled} onPress={() => setPanel(id)} />)}
+        <NavigationRow theme={props.theme} label="Human rerun requests" hint="Optional separate human credential" onPress={() => setDetail("requests")} />
+      </SettingsCard>
+    </SettingsSection>}
+    {detail === "connection" && <SettingsSection title="Connection" info="The API server is used by Paseo. Blank web app URL uses the API URL. Credentials are stored immediately, separately from this draft.">
+      <SettingsCard key={`connection-${formVersion}`}>
+        <SettingsInput label="API server URL" placeholder="https://api.plan.example.com" initialValue={values.serverUrl} disabled={disabled} onChangeText={(serverUrl) => set({ serverUrl })} />
+        <SettingsInput label="Web app URL" placeholder="Same as API server" initialValue={values.webUrl} disabled={disabled} onChangeText={(webUrl) => set({ webUrl })} />
+        <CredentialField {...props} kind="apiKey" disabled={disabled} />
+        <NavigationRow theme={props.theme} label="Paseo host connection" hint={values.paseoConnectionMode === "auto" ? "Automatic · This host" : values.paseoUrl} disabled={disabled} onPress={() => setPanel("host")} />
+      </SettingsCard>
+    </SettingsSection>}
+    {detail === "execution" && <>
+      <SettingsSection title="Delegation" info="New settings affect future work. Existing work keeps its captured settings. Connection and runner credential changes drain active work before replacement.">
+        <SettingsCard>
+          <SettingsSwitch label="Automatic delegation" hint="Global claims are unfiltered. Disabled and unmapped projects can still be claimed and fail. Runtime pause is separate from this saved switch." value={values.automatic} disabled={disabled} onValueChange={(automatic) => set({ automatic })} />
+        </SettingsCard>
+      </SettingsSection>
+      <SettingsSection title="Execution defaults" info="Issue and project overrides take precedence. Blank model or mode uses the provider default and remains unresolved until session creation. Permission requests depend on the native mode. No-tools is instruction-only, not enforced isolation." trailing={<RefreshButton theme={props.theme} label="Refresh providers" disabled={disabled || catalog.loading} onPress={catalog.refresh} />}>
+        <SettingsCard key={`execution-${formVersion}`}>
+          <SelectionFields value={{ provider: values.defaultProvider, model: values.defaultModel, modeId: values.defaultModeId }} onChange={(selection) => set({ defaultProvider: selection.provider, defaultModel: selection.model, defaultModeId: selection.modeId })} providers={catalog.data || []} disabled={disabled} global />
+          <SettingsInput label="Concurrent executions" initialValue={String(values.maxConcurrent)} disabled={disabled} onChangeText={(text) => set({ maxConcurrent: text.trim() ? Number(text) : Number.NaN })} />
+          <SettingsInput label="Execution timeout (minutes)" initialValue={String(values.executionTimeoutMs / 60000)} disabled={disabled} onChangeText={(text) => set({ executionTimeoutMs: text.trim() ? Number(text) * 60000 : Number.NaN })} />
+        </SettingsCard>
+        <ProviderErrors providers={(catalog.data || []).filter((provider) => provider.id === values.defaultProvider)} />
+        <Feedback theme={props.theme} error={catalog.error} />
+      </SettingsSection>
+    </>}
+    {detail === "projects" && <ProjectRepositories key={`projects-${formVersion}`} {...props} config={values} projects={availableProjects.data || []} readiness={readiness?.revision === settings.revision ? readiness.value.projects : undefined} initialProjectId={projectId} loading={availableProjects.loading} error={availableProjects.error} connected={!!settings.values.serverUrl} refresh={availableProjects.refresh} disabled={disabled} onChange={(projects) => set({ projects })} />}
+    {detail === "requests" && <SettingsSection title="Optional human credential" info="This key is used only for explicitly confirmed rerun and smoke comments after verifying a human identity. It is never injected into agents or MCP. The runner requires a different, external-agent key. Browser-copy mode needs no human key."><SettingsCard><CredentialField {...props} kind="requestApiKey" disabled={disabled} /></SettingsCard></SettingsSection>}
+    {(dirty || conflict || disabled || settings.saveError || action.error || validationError) && <SettingsSection title="Changes" info="Changes stay in this draft until saved. Saving checks the original revision and does not resume a runtime pause.">
+      <SettingsCard>
+        <SettingsAction label={conflict ? "Draft conflicts with saved settings" : "Unsaved changes"} actionLabel={disabled ? "Saving…" : "Save changes"} disabled={disabled || !dirty || !!validationError} onPress={() => { void action.run(async () => { if (await settings.save(values, draft.revision)) { setSavedRevision(draft.revision); toast.show("Settings saved", { variant: "success" }); } }); }} />
+        {(dirty || conflict) && <SettingsAction label="Settings draft" actionLabel="Discard" disabled={disabled} onPress={() => replaceDraft(settings.values, settings.revision)} />}
+      </SettingsCard>
+      <Feedback theme={props.theme} error={settings.saveError || action.error || validationError || (conflict ? "Saved settings changed elsewhere. Discard to load the latest version; this draft keeps its original revision." : undefined)} />
+    </SettingsSection>}
+  </>;
+}
