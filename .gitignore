@@ -5,3 +5,6 @@ coverage/
 .env
 .env.*
 !.env.example
+credentials.json
+sessions.json
+context-assets/
