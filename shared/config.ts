@@ -1,5 +1,7 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { fieldBindingsSchema, taskContextOptionsSchema } from "./task-context";
+import { continuationOptionsSchema } from "./continuation";
 
 export const httpUrl = z.string().trim().refine((value) => {
   try {
@@ -20,6 +22,8 @@ export const projectMappingSchema = selectionSchema.extend({
   worktree: z.boolean().default(true),
   baseBranch: optionalText,
   statusPolicy: z.partialRecord(milestoneSchema, z.number().int().positive()).optional(),
+  taskContext: taskContextOptionsSchema.optional(),
+  fieldBindings: fieldBindingsSchema.optional(),
 });
 const connectionSchema = z.object({
   serverUrl: z.union([z.literal(""), httpUrl]).default("").transform((value) => value.replace(/\/+$/, "")),
@@ -37,6 +41,8 @@ const connectionSchema = z.object({
   issueOverrides: z.record(z.string(), selectionSchema).default({}),
   chatProjects: z.record(z.string(), z.string()).default({}),
   statusPolicy: z.partialRecord(milestoneSchema, z.number().int().positive()).default({}),
+  activityPrivacy: z.enum(["off", "metadata", "full"]).optional(),
+  continuation: continuationOptionsSchema.optional(),
   mcp: z.object({
     enabled: z.boolean().default(false),
     url: z.union([z.literal(""), httpUrl]).default(""),
