@@ -1,0 +1,27 @@
+It's a Plan for Paseo
+
+This distribution contains code adapted from the It's a Plan runner
+(@itsaplan/runner 0.7.0).
+Copyright 2026 Andrii Poluosmak
+Licensed under the Apache License, Version 2.0.
+
+Upstream: https://github.com/croffasia/itsaplan
+Revision: 02235dd57a6cecffa62e0d6c054cb7b7df72e153
+Source scope: packages/runner only.
+
+Modified files containing adaptations:
+- server/protocol.ts: runner API client, extended with validation, cancellation,
+  sanitized errors and project/issue API operations.
+- server/engine.ts: runner polling, concurrency, heartbeats and chat coordination,
+  replaced provider subprocess execution with native Paseo session orchestration
+  and added durable recovery.
+- shared/models.ts: runner task/result/chat/event protocol types, expressed as
+  validated schemas with explicit execution-attempt and persistence metadata.
+
+The upstream revision contains no applicable NOTICE file. This NOTICE identifies
+our modifications and preserves attribution; it does not change upstream terms.
+The full Apache-2.0 text and upstream copyright notice are in LICENSE.
+See THIRD_PARTY.md for exact source links and adaptation boundaries.
+
+The remainder of the It's a Plan repository has separate licensing. This notice
+makes no claim that its root AGPL-3.0 application code is Apache-2.0 licensed.

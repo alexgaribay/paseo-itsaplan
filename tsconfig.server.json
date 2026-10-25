@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node", "bun"] },
+  "include": ["index.server.ts", "server/**/*.ts", "shared/**/*.ts", "client/**/*.test.ts"],
+  "exclude": []
+}

@@ -1,0 +1,9 @@
+{
+  "id": "itsaplan",
+  "name": "It's a Plan",
+  "description": "External-agent execution and issue management through native Paseo sessions.",
+  "requirements": {
+    "paseo": ">=0.13.0 <0.14.0"
+  },
+  "build": [["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]]
+}
