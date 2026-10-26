@@ -18,7 +18,7 @@ function canonical(value: unknown): string {
 }
 export function factDigest(value: unknown): string { return createHash("sha256").update(canonical(value)).digest("hex"); }
 export function executionConfigDigest(config: Config, projectId: string, issueId: number): string {
-  return factDigest({ serverUrl: config.serverUrl, host: [config.paseoConnectionMode, config.paseoUrl], defaults: [config.defaultProvider, config.defaultModel, config.defaultModeId], project: config.projects[projectId], issue: config.issueOverrides[String(issueId)], mcp: config.mcp });
+  return factDigest({ serverUrl: config.serverUrl, host: [config.paseoConnectionMode, config.paseoUrl], defaults: [config.defaultProvider, config.defaultModel, config.defaultModeId], project: config.projects[projectId], issue: config.issueOverrides[String(issueId)], mcp: config.mcp, execution: { timeoutMs: config.executionTimeoutMs, leaseSafetyMs: config.leaseSafetyMs, activityPrivacy: config.activityPrivacy ?? "off" } });
 }
 export function taskRequirements(issue: Issue, context?: PersistedTaskContext): string {
   return canonical({ id: issue.id, projectId: issue.projectId, identifier: issue.identifier, title: issue.title, description: issue.description ?? "", context: context ? { text: context.text, warnings: context.warnings, digest: context.digest, assets: context.assets.map(({ id, filename, mimeType, digest }) => ({ id, filename, mimeType, digest })) } : undefined });
@@ -60,7 +60,7 @@ export function sourceFacts(record: SessionRecord): { task: string; systemPrompt
 }
 export function sourceFactsDigest(record: SessionRecord): string {
   sourceFacts(record);
-  return factDigest({ key: record.key, serverUrl: record.serverUrl, task: record.task, intent: record.intent, provenance: record.taskProvenance, issue: record.taskIssue, context: record.taskContext, plan: record.plan, project: record.projectMapping, agentId: record.agentId, workspaceId: record.workspaceId, cwd: record.cwd, provider: record.provider, model: record.model, modeId: record.modeId, nativeLastUserMessageAt: record.nativeLastUserMessageAt, result: record.result, evidence: record.evidence, acceptance: record.acceptance, createdAt: record.createdAt });
+  return factDigest({ key: record.key, serverUrl: record.serverUrl, task: record.task, intent: record.intent, provenance: record.taskProvenance, issue: record.taskIssue, context: record.taskContext, plan: record.plan, project: record.projectMapping, agentId: record.agentId, workspaceId: record.workspaceId, cwd: record.cwd, branchName: record.branchName, limits: record.limits, provider: record.provider, model: record.model, modeId: record.modeId, nativeLastUserMessageAt: record.nativeLastUserMessageAt, result: record.result, evidence: record.evidence, acceptance: record.acceptance, createdAt: record.createdAt });
 }
 export function assertSourceNative(record: SessionRecord, native: SessionSnapshot | null): asserts native is SessionSnapshot {
   if (!native || native.id !== record.agentId || native.archived || native.active || native.error || native.pendingPermissionCount !== 0 || native.cwd !== record.cwd || native.workspaceId !== record.workspaceId || native.provider !== record.provider || native.model !== record.model || native.modeId !== record.modeId || !native.lastUserMessageAt || native.lastUserMessageAt !== record.nativeLastUserMessageAt) {

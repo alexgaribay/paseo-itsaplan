@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { configSchema } from "../shared/config";
 import type { SessionRecord } from "../shared/models";
 import type { Gateway, SessionSnapshot } from "./contracts";
-import { assertContinuationGrant, captureProvenance, continuationScope, sourceFacts } from "./continuation";
+import { assertContinuationGrant, assertSourceCurrent, captureProvenance, continuationScope, sourceFacts } from "./continuation";
 import type { ExperienceContext } from "./experience";
 import { makePlan, resolvePreferences } from "./plan";
 import { Client, type UpstreamRun } from "./protocol";
@@ -175,4 +175,27 @@ describe("reviewed continuation handoff", () => {
     expect(() => assertContinuationGrant(source, grant, "other-request")).toThrow();
     expect(() => sourceFacts({ ...source, taskIssue: { ...source.taskIssue!, description: "Changed" } })).toThrow();
   });
+});
+
+test.each(["activityPrivacy", "executionTimeoutMs", "leaseSafetyMs"] as const)("a handed-off continuation rejects changed %s policy", async (field) => {
+  const preview = await prepareContinuation(context, { key: source.key });
+  await submitRerun(context, { ...preview, attestContinuation: true });
+  context.config = field === "activityPrivacy"
+    ? { ...context.config, activityPrivacy: "full" }
+    : { ...context.config, [field]: context.config[field] + 1000 };
+  await expect(assertSourceCurrent(context, storage.get(source.key)!)).rejects.toThrow();
+  expect(nativeMutations).toBe(0);
+  expect(posts).toBe(0);
+});
+
+test("a handed-off grant binds recorded execution limits and worktree association", async () => {
+  const preview = await prepareContinuation(context, { key: source.key });
+  await submitRerun(context, { ...preview, attestContinuation: true });
+  const grant = storage.requests()[0]!.continuation!;
+  for (const change of [
+    { limits: { executionTimeoutMs: 900_000, leaseSafetyMs: 120_000 } },
+    { branchName: "changed-worktree-association" },
+  ]) expect(() => assertContinuationGrant({ ...source, ...change }, grant, grant.requestId)).toThrow();
+  expect(nativeMutations).toBe(0);
+  expect(posts).toBe(0);
 });
