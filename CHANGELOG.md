@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add bounded opt-in checklist, relation/subtask, public linked Doc, supported text/PDF/image attachment and development context. Persist verified images outside the JSON journal; missing or changed captured assets fail closed.
+- Add project/issue-type/select-option provider and model bindings, below explicit and saved issue overrides. Stale, conflicting or unavailable selections fail before dispatch; fields cannot select repositories or permission modes.
+- Add normalized SDK tool activity with off/metadata/full privacy, known-credential redaction, reconnect deduplication and text cursors.
+- Use canonical issue identifiers at the start of new native worktree branches, preserving existing worktrees. Add conditional nonclosing PR-reference guidance and selected-execution development links; no automatic pushes, PR creation, merges or completion transitions.
+- Add explicitly attested continuation through durable human/browser requests, with fresh sessions by default, original-scope/native/lease checks and a post-refresh configuration/credential admission fence. Bind privacy, execution safety limits and worktree association; changed policy cannot reuse an old approval.
+- Add exact, explicitly approved per-run ticket-report previews and owned-comment updates without MCP. Fence before writes and reconcile complete actor/body/marker evidence after lost acknowledgments; ambiguous delivery never blindly reposts.
+- Keep optional context/field controls in project editors, activity/continuation controls in Advanced, and reporting/development in selected execution details. Preserve the minimal activity landing page and web-based issue management.
+- Reveal context-source switches only while enabled and field-routing controls through Configure. Read catalogs only for an open editor or existing bindings that require validation.
+- Verify existing scheduled external-run consumption and meaningful issue-less native titles without adding a scheduler. Document provider-neutral run-link and Gitea CI/outbound-PR limitations in the upstream follow-up ticket.
+
 - Distinguish the It's a Plan API server URL from the browser-facing web app URL, with separate examples and saved-connection guidance.
 - Replace the project selector and “Add mapping” step with named It's a Plan projects and direct per-project repository setup. Preserve existing settings when discovery is unavailable, and clarify first-run/empty-account states.
 - Label the required external-agent execution key explicitly, distinguish it from personal/MCP credentials, and show setup guidance before entry. Preserve the actionable non-agent identity error in connection tests and startup status without exposing remote error bodies; display connection-test feedback with the connection controls.

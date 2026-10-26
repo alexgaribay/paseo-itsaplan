@@ -10,6 +10,7 @@ A native Paseo plugin: It's a Plan owns issues, assignments, external-agent iden
 - No promise of compatibility with unreviewed future server protocols. The upper Paseo bound is deliberate: unattended execution currently needs a small, isolated SDK transport adapter described below.
 - Linked-repository discovery additionally verified against It's a Plan [`599af2bbb5364e55f551dbea7c1736b7c3749eae`](https://github.com/croffasia/itsaplan/tree/599af2bbb5364e55f551dbea7c1736b7c3749eae): project-scoped Git connections, repository URLs, and permission guards. No application source was copied.
 - Task-intent, queue and human-rerun contracts additionally verified against It's a Plan [`79f7802af892df8a1eaba190a02d2fe182fe6785`](https://github.com/croffasia/itsaplan/tree/79f7802af892df8a1eaba190a02d2fe182fe6785). The Apache runner adaptation base remains unchanged; no AGPL application source was copied.
+- Optional context, stable field selections, Git references, scheduling and forge limitations rechecked against [`ad87c568d1a872f830a526bd9ace774eafd57217`](https://github.com/croffasia/itsaplan/tree/ad87c568d1a872f830a526bd9ace774eafd57217). These are original plugin implementations against observed HTTP contracts, not copied AGPL application code.
 
 ## Install
 
@@ -64,7 +65,7 @@ Matching compares full forge host, repository path and ports from structured met
 Configure:
 
 - Global provider/model/mode and project overrides, using Paseo's discovered catalog. No runtime list of provider names is hardcoded.
-- Saved issue overrides by numeric issue ID. Precedence: explicit manual selection → saved issue override → project → global. Neither an inherited model nor an inherited mode crosses a different provider. With no compatible model override, the plugin omits the model and lets Paseo resolve its provider default; it never selects a catalog entry itself. Paseo may still choose a catalog fallback when its provider has no advertised default. Execution plans show each selection's source and unresolved defaults; session details show the actual model/mode after creation. Invalid or unavailable explicit selections fail without switching providers.
+- Saved issue overrides by numeric issue ID. Precedence: explicit manual selection → saved issue override → opt-in custom-field option mapping → project → global. Neither an inherited model nor an inherited mode crosses a different provider. With no compatible model override, the plugin omits the model and lets Paseo resolve its provider default; it never selects a catalog entry itself. Paseo may still choose a catalog fallback when its provider has no advertised default. Execution plans show each selection's source and unresolved defaults; session details show the actual model/mode after creation. Invalid or unavailable explicit selections fail without switching providers.
 - Both **global automatic execution** and **project automatic execution** must be enabled for unattended work. Disabled or unresolved projects fail explicitly after claim; they never run in a default repository. Claims are **global and unfiltered**: disabling a project does not remove its work from the external agent's queue. Readiness and queue previews surface this limitation. Discovery does not route work between different Paseo daemons.
 - Maximum concurrent automatic executions: default **2**, range **1–32**. In-flight claims reserve capacity across run and chat feeds. This is not a daemon-wide limit on manual Paseo use.
 - Timing controls show seconds for polling/lease safety and minutes for execution timeout; persisted settings and protocol values remain milliseconds. Defaults: poll every **3 seconds**, timeout **30 minutes**, heartbeat every **60 seconds**, local lease safety **120 seconds**. Keep the server lease safely longer than the local deadline (upstream default: **300 seconds**). Polling and lease controls are under **Advanced → Polling and leases**.
@@ -100,6 +101,16 @@ Representative non-secret settings excerpt (other fields retain defaults):
 
 Provider names above are examples, not guaranteed installed providers. Keep credentials out of settings, issue text, repository files and prompts.
 
+### Optional task context and field routing
+
+In a project's repository editor, enable **Optional task context** and choose only the needed sources: checklists, direct relations/subtasks, explicitly linked public Docs, attachments and development metadata. Source switches appear only while enabled. This is off for existing installations. Private or archived Docs are omitted without fetching their bodies; the plugin does not traverse arbitrary links or related tasks' private descriptions. Scanned PDFs/images are not OCRed.
+
+The authenticated attachment API supplies supported text/PDF extraction and PNG/JPEG/GIF/WebP bytes. Captures are bounded to 48,000 text characters, eight Docs, 30 relations, six attachments, 2 MB per asset, 6 MB aggregate assets, 8 MB response data and a 30-second operation deadline. Unsupported, denied, unavailable, redacted or truncated content produces explicit warnings. Images use native session image inputs when supported; an unsupported provider receives an explicit limitation, not fabricated image contents.
+
+Captured text and image manifests remain private journal data. Verified image bytes live in the private `context-assets/` sidecar, addressed by SHA-256. Recovery uses those captured bytes, not a silent refetch; missing, changed, mismatched or symlinked assets fail closed. Context is still untrusted task data, never permission to execute shell commands or select repositories. Opt in deliberately: images and source documents can contain sensitive material that automatic text redaction cannot recognize.
+
+Choose **Configure** under **Field-based agent selection** to map a stable **project / issue-type / select-field / option ID** to a discovered provider and model. Catalogs are read only when configuring fields or validating existing bindings. Only explicitly saved option mappings apply; arbitrary field text cannot choose a path, permission mode or command. Conflicting selections, stale fields/options and unavailable providers/models fail before dispatch. The execution plan records when its provider/model came from a field.
+
 ### Issues, sessions and status
 
 - Browse, search, edit and delegate issues in the It's a Plan web app. The plugin's **Open It's a Plan** shortcut uses the configured web app URL; execution pages retain direct issue links.
@@ -125,6 +136,14 @@ Run execution resolves the original structured task from the authoritative queue
 
 **Tool use is the default for normal delegated work.** Native system instructions and each new non-smoke task prompt explicitly permit available tools for inspection, implementation and verification; tickets do not need to request tools. Explicit task restrictions, including no-tools requests, take precedence. This guidance grants no new tools or permissions, bypasses no Paseo approval, and does not require gratuitous calls for simple questions or exact-output tasks. Already-running turns are not rewritten.
 
+### Explicit continuation
+
+Fresh native sessions remain the default for issue executions, including repeat assignments on the same issue. **Advanced → Execution behavior → Allow reviewed continuation** permits a separate **Review continuation** action on a completed run; it does not enable automatic same-issue reuse.
+
+Review the original task, operator instructions, requirements and attached materials, then explicitly attest that this is the same compatible unrestricted task. A 30-minute grant binds the source run/attempt, authenticated actor, native session and last user turn, original task/restrictions, requirements/context, repository and execution configuration. Activity privacy, timeout/lease policy, recorded limits and worktree association are part of that scope; changing them invalidates an old approval. The existing human-mention/browser handoff delivers that single durable request. New free-form requirements require a fresh session.
+
+Known smoke, exact-output, no-tools, no-posting and bounded-scope tasks are blocked. So are legacy/unknown provenance, failed/canceled/uncertain sources, changed requirements or selections, busy/archived/missing sessions, pending approvals, expired grants and transferred execution attempts. Absence of a recognized phrase is never proof that reuse is safe: human attestation and immutable provenance are both required. Final admission rechecks the lease and native state; configuration or credential changes during native refresh prevent the prompt, without acquiring cancellation ownership over the source.
+
 ### Ticket reporting
 
 Automatic issue execution and programmatic manual issue starts share a per-task reporting convention. It applies to implementation work, not questions, smoke tests or tasks requesting a different/exact response. Original requirements remain unchanged and outside the system prompt.
@@ -135,17 +154,30 @@ Automatic issue execution and programmatic manual issue starts share a per-task 
 - Use existing, authorized issue-comment tools when available and permitted, with normal Paseo permissions. Do not obtain credentials or create a reporting connection. If posting is unavailable, forbidden or unconfirmed, retain the findings in the conversation/final report and disclose that delivery state; do not blindly repost.
 - Finish with **Outcome**, **Changes**, **Validation**, **Decisions and Discoveries**, **Remaining Work**, and **References**. Identify untested paths and unverified assumptions; include only real checks, approvals and references. Outcome labels are report text, not new execution API statuses.
 
-The execution API stores the final answer as a run result, **not an automatic completion comment**. The plugin does not mine transcripts for findings, add a second reporting queue, post duplicate completion comments or transition issue status from report text. Interim comments depend on available agent tooling; optional MCP remains optional, and its credentials stay separate from the execution key.
+The execution API stores the final answer as a run result, **not an automatic completion comment**. From a selected execution, **Review ticket report** separately verifies the original task's permission to post, previews the exact structured comment and requires explicit human attestation. Optional user-reviewed notes are not verified model/test evidence. The plugin never mines transcripts for approval, automatically posts a report, changes issue status or edits original requirements.
+
+Report delivery uses the bot's existing REST API permissions, not agent MCP or the separate human rerun credential. A durable fence precedes every approved write. One per-run marker and exact actor/body checks reconcile lost acknowledgments; unknown delivery cannot be blindly retried. Later approved edits update only the exact known bot-owned comment, after a complete authoritative feed proves it was not changed. Partial, missing, inaccessible or ambiguous feeds preserve uncertainty. Keep source credentials and private context out of notes.
 
 This is an instruction-level convention, not a provider-independent enforcement mechanism. New task prompts, including new turns on reused sessions, receive the current policy; already-running turns are not replayed. Chat routing/conversation state and attached sessions that receive no prompt are unchanged.
 
 ### Worktrees and Gitea
 
-Worktrees are enabled by default per mapped project. Creation goes through Paseo's native `worktree: { mode: "branch-off" }` request, using the configured base branch or Paseo's repository default. Branches are deterministic, issue-text-independent `itsaplan-<task-hash>` names; agent creation also uses a stable ID and idempotency key. The slash-free name matches Paseo 0.13's native branch normalization.
+Worktrees are enabled by default per mapped project. New work uses native `PaseoApi.workspaces.create` with a worktree branch-off source, an explicit branch name and the configured base branch or native repository default. Canonical identifiers lead new names, e.g. `TW-42-itsaplan-<stable-hash>`, so It's a Plan's forge matcher recognizes them. Explicit workspace creation avoids the SDK's slug case/slash normalization. Stable agent/workspace recovery prevents duplicate creation; existing `itsaplan-<hash>` branches and worktrees are preserved rather than renamed.
 
 Workspace/session/journal associations retain the issue and checkout. Follow-up chat uses its original session/worktree. Worktrees, commits and conversations are **never automatically deleted or archived** by this plugin. Inspect dirty state and use Paseo's existing workspace cleanup flow. Keep worktrees until review/follow-up is finished.
 
 Gitea remotes and Git credentials belong to the mapped repository and Paseo/provider environment. There is no separate Gitea client, automatic push, protected-branch push or PR merge in this plugin. Normal agent tool access remains governed by Paseo permissions; the plugin is not a Git policy enforcement sandbox.
+
+When a task actually calls for a PR, native task guidance recommends a **nonclosing** `Refs TW-42` reference. It never requests a PR merely for linking, uses `Fixes`/`Closes` by default, pushes, merges or infers completion from a turn. **Execution details → Task context and development** reads current issue-linked development records and distinguishes unavailable access from an empty result. Captured context is historical; links and forge state do not prove tests passed.
+
+Upstream currently labels run session links as `codex://threads/...`, so this plugin intentionally omits run `sessionId` instead of mislabeling a Paseo agent. Native **Open agent** navigation remains provider-neutral. Gitea/Forgejo can parse GitHub-shaped check-run events, but managed hooks do not request those events; outbound PR operations are restricted upstream to GitHub/GitLab. Those gaps are tracked in [PIAP-1](https://plan.alexgaribay.com/issue/2). No upstream repository, forge hook or CI state is modified by this plugin.
+
+### Scheduled tasks and activity privacy
+
+It's a Plan's existing cron/state-change scheduling enqueues ordinary external-agent runs. The plugin consumes them through the same queue, capacity limits, leases and project routing; issue-less runs receive trigger/run-based native titles. Configure schedules in It's a Plan. There is no plugin scheduler or second task queue; the internal-only `run_ai_agent` action is not used for external delegation.
+
+**Advanced → Execution behavior → Tool activity** controls normalized SDK tool events: **Off** (default), **Tool names only** (arguments withheld, results replaced with a withholding notice), or **Arguments and results**. Run traces still require upstream `traceEvents`; chat uses its existing stream. Full mode can expose code or sensitive tool data: known captured plugin credentials are redacted, but this is not general data-loss prevention. Per-execution event identities and text cursors suppress recovery replay; upstream chat's missing offset/attempt fencing still prevents an exactly-once guarantee.
+
 
 ### Agent chat
 
@@ -197,6 +229,7 @@ Private state defaults to `$PASEO_HOME/plugin-data/itsaplan` (otherwise `~/.pase
 - Directory mode **0700**, JSON files **0600**, fsync + atomic rename; corruption is reported and preserved rather than overwritten with empty state.
 - `credentials.json`: external execution API key, optional separate human request key, MCP token and Paseo password. The current plugin SDK has **no credential vault API**; these are restricted local files, **not OS-keychain encryption**. Protect the daemon account, disk and backups.
 - `sessions.json`: server-scoped run/message IDs, execution attempt, deterministic agent ID, workspace, issue/project, source mapping, immutable execution limits/plan, actual model/mode, heartbeat/cancellation, pending result/events, acceptance evidence, historical review observations/timestamp, chat bindings, runtime pause and fenced requests with delivery/actor scope. The checkout is committed before native creation; restart cannot retarget prepared work. This is recovery/delivery metadata, **not a second task queue**. Only It's a Plan assigns work. Prompts, comments and output can be sensitive; protect journal/backups.
+- Optional context/provenance, continuation grants and approved ticket-report fences are part of that journal, not durable lifecycle events. Public status uses an explicit allowlist: original task/system text, captured context/asset references, grants, pending event payloads and private report bodies are excluded.
 - A nonce-bearing, atomically installed local owner lock rejects another live backend. Dead-owner recovery never deletes a replacement owner's lock. Use one installation/data directory per daemon.
 - Closing storage rejects late mutations from a retired backend before releasing ownership; an old callback cannot overwrite a replacement backend's journal.
 
@@ -216,6 +249,10 @@ Private state defaults to `$PASEO_HOME/plugin-data/itsaplan` (otherwise `~/.pase
 | Stop acknowledgment unavailable | Persist unconfirmed cancellation, fence new claims and retry native stop; while active, renew only a still-valid lease. Unknown native state is never treated as idle. |
 | Rerun preview closed before handoff | Dismiss the untouched preview; no upstream comment or run is created. |
 | Rerun comment/API acknowledgment uncertain | Keep the original nonce and reconcile authoritative queue metadata. Browser handoff recovery exposes only the exact already-handed-off text; it never reposts or upgrades the delivery channel. |
+| Continuation preparation/reload | Recover the same handed-off nonce and immutable scope; never infer approval from issue identity or transfer it to a retry. Expired historical grants may be followed for a new fresh rerun, but cannot authorize another continuation. |
+| Source changes during native refresh | The admission epoch and fresh native identity fence reject dispatch. A never-dispatched reused source is not canceled. |
+| Captured image absent/corrupt | Fail without substituting newly fetched content or silently dropping the captured image. |
+| Ticket report acknowledgment lost | Retain the exact fenced body/marker and reconcile the complete bot-authored comment feed; do not repost or infer absence from a partial feed. |
 | Invalid credentials | Pause claims; replace credentials/test/save to restart. A credential replacement does not grant additional upstream project permissions. |
 | Historical outcome differs from delivery evidence | Compare both sources, then optionally record a review timestamp. Preserve unknown acknowledgment and all execution/cancellation state. |
 

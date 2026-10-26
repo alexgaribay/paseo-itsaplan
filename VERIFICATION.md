@@ -11,7 +11,7 @@ Specific protocol checks against current runner **and server** source:
 - Bot-account project/issue REST access, paginated project search, qualified project references, stable `issueId → projectId` lookup and numeric issue web permalink.
 - Run heartbeat rejection vs explicit chat cancellation; terminal reported failures vs server retries on expired leases.
 - Paseo 0.13 lacks startup `paseo` context and public agent-handle cancellation; the pinned in-process transport adapter is necessary, not a separately managed service.
-- Native worktree branch normalization was observed live. The initial slash-containing requested name did not equal the actual native branch; production now requests a deterministic slash-free name and retains checkout/branch validation. A regression covers a mismatched returned checkout.
+- Native worktree branch normalization was observed live. New workspaces now use Paseo's explicit workspace creation API with a slash-free canonical issue-identifier prefix and native idempotency key; existing worktrees retain their recorded names. SDK-boundary and disposable Git checkout regressions cover branch/checkout mismatches. This is not a new live worktree/provider acceptance run.
 
 ## Automated checks
 
@@ -22,7 +22,7 @@ npm run typecheck
 npm test
 ```
 
-Latest observed after the execution-focused UI redesign: **both TypeScript configurations passed; 353 tests passed, 0 failed, 1049 assertions across 15 files**. `npm test` includes server and native client-state tests.
+Latest observed after the optional workflow integrations and final project-editor disclosure change: **both TypeScript configurations passed; 573 tests passed, 0 failed, 1866 assertions across 24 files**. `npm test` includes server and native client-state tests.
 
 | Area | Behavioral coverage |
 | --- | --- |
@@ -246,3 +246,47 @@ Final installed-build check opened History, then clicked the native It's a Plan 
 Closed the owned verification browsers and observed both owned process IDs absent, stopped the temporary relay, and removed its script, browser profile and screenshot files. The user's Paseo daemon and plugin remain running.
 
 A subsequent copy-only review correction replaced the first-run assignment prompt with “No executions recorded yet,” avoiding a suggestion to delegate again when a delivery request can already exist. Both TypeScript configurations passed; a guarded reload again observed unchanged settings/credential presence, connected and resumed claiming, zero active executions and a complete empty upstream queue. No new UI fixture, native model execution or wording test was added for this text-only change.
+
+## Opt-in workflow integrations — 2026-10-25 UTC
+
+Rechecked It's a Plan at [`ad87c568d1a872f830a526bd9ace774eafd57217`](https://github.com/croffasia/itsaplan/tree/ad87c568d1a872f830a526bd9ace774eafd57217), including runner 0.7.0, structured tasks, AG-UI events, fields, resources, comments, scheduled requests and development integrations. Paseo source review used [`d0fd2e532059eeaec4c9e9e510fd65e1a3c6e1ed`](https://github.com/getpaseo/paseo/tree/d0fd2e532059eeaec4c9e9e510fd65e1a3c6e1ed); installed SDK/client/protocol 0.13.0 declarations and both TypeScript configurations remain the compatibility evidence. Runner adaptations retain their original Apache-2.0 notices and revision attribution. No It's a Plan application source was copied.
+
+### Automated behavioral checks
+
+- Both TypeScript configurations and the full suite passed: **573 tests, 0 failures, 1866 assertions, 24 files**.
+- Context tests cover bounded checklists, direct relations/subtasks, public linked Docs, text/PDF extraction, supported images, denied/private/archived content, deadlines and explicit partial/unavailable warnings. Asset-cache tests cover private permissions, atomic publication, hash/size/MIME checks, symlinks, reload and missing/changed captured bytes.
+- Routing tests cover exact project/issue-type/field/option scope, stale/conflicting bindings, provider-compatible precedence and unavailable models/providers. SDK-boundary tests cover explicit native workspace creation, canonical branch naming and preserved legacy associations.
+- Lifecycle tests cover normalized tool events, off/metadata/full privacy, known-credential redaction, reconnect cursors, later-human-turn ownership, cancellation, lease loss and post-refresh configuration/credential admission.
+- Continuation tests cover original requirements/context, restricted and unknown tasks, actor/run/attempt identity, expiry, source/native drift, retries and immutable source scope. Four focused regressions first failed against the old digest: changed activity privacy, timeout, lease safety, and recorded limits/worktree association could retain an old approval. All four pass with the policy/source fingerprint fix.
+- Report tests cover exact approval, permission/restriction checks, actor/body/comment ownership, durable write fencing, lost acknowledgments, incomplete authoritative feeds, explicit reconciliation and approved updates. Public-contract tests keep raw tasks, context assets, continuation grants and private delivery payloads out of routine status/request projections.
+
+### HTTP/engine smoke
+
+Ran the production `Client`, `Engine` and `PrivateStorage` against a real loopback HTTP fixture, a disposable Git checkout and mocked native gateway interfaces. No live coding provider or real execution queue was used.
+
+Observed **seven claim calls, four completed turns and three mock native sessions**. An issue selected Codex through its configured field binding; an issue-less scheduled request selected OMP and received `It's a Plan schedule run 2`. Checklist, linked document, extracted PDF text and an image reached the native input path. Seven heartbeats were observed while work was active; the fixture used a 25 ms interval, not a live 60-second lease soak. Metadata activity withheld tool arguments and known credentials.
+
+The explicitly approved continuation reused its source session; a subsequent ordinary assignment on the same issue created a fresh session. An accepted comment write with a lost acknowledgment remained unknown, reconciled through the complete authoritative feed, and then updated the same comment: **one create and one update**, not a duplicate create. Reopening private storage rehydrated the exact verified image without base64 in the JSON journal. Run results omitted the provider-specific upstream `sessionId` field.
+
+### Native UI checks and visual limits
+
+Used the actual installed Paseo web assets and final installed plugin client bundle with an isolated loopback-only fake daemon. Plugin RPC responses were static fixtures validated against the current contracts; the fixture did not forward to the live host or It's a Plan.
+
+- The landing screen retained connection/delegation status and short activity navigation, without an issue browser or large historical cards.
+- Advanced execution behavior exposed native privacy choices and reviewed-continuation opt-in. Closing a changed privacy editor without Apply restored its previous value.
+- Selected execution context opened in a native detail dialog, distinguishing an absent historical snapshot from current Gitea development links.
+- Report posting was disabled before original-task attestation and enabled afterward. Editing and reviewing a new exact preview cleared attestation and disabled posting again. No post was clicked.
+- Continuation delivery was disabled before original-scope attestation and enabled afterward. No Prepare/submit action was clicked; closing discarded the untouched fixture preview.
+- Inspected desktop **1360×1000** and compact **390×844** rendering. The compact report used Paseo's native bottom sheet, preserved original-requirement line breaks, and the document width remained **390 px** without horizontal overflow.
+
+The final project-editor disclosure change—hide source switches while disabled and reveal field controls through Configure—passed TypeScript checks but **was not visually re-exercised**. No desktop/mobile interaction claim is made for that specific change. No permanent wording, navigation-wiring or snapshot tests were added.
+
+Fixture evidence recorded context/report/continuation previews and one discard, with **no submit/settings-save calls, blocked messages or schema errors**. The owned browser and fixture services were stopped; temporary fixture scripts, assets, browser profiles, source clones, patch, backup and this pass's captured screenshots were removed.
+
+### Live installation and upstream boundary
+
+Automatic claims were paused during final validation without canceling active work. Reloaded the final plugin while paused and idle; saved configuration/revision, credential-presence flags and session associations were unchanged. After isolated checks and cleanup, restored the original **paused false** state. The final read-only health check observed **connected, claiming true, zero active executions, no pending configuration** and an available complete empty upstream queue. One in-flight poll reservation was present; it was not a coding session.
+
+Existing run 4 retained `PASEO_IAP_SMOKE_OK`, successful delivery, passed acceptance and zero observed tools. Historical run 1 retained its uncertain phase, failed upstream result, archived native state, unknown delivery and prior review timestamp. The issue column and six existing human-request records were unchanged. No new live execution, report comment, continuation handoff or status transition was created for this verification.
+
+Created the explicitly requested, unassigned [PIAP-1 upstream follow-up](https://plan.alexgaribay.com/issue/2) for provider-neutral session URLs and Gitea CI/outbound PR API parity. No upstream code, bot permissions or delegation settings were changed. This pass did not perform new live OMP/Pi, Codex, Claude Code, forge webhook/CI or native iOS/Android acceptance tests; earlier live smoke evidence is historical, not proof of the new optional paths.
