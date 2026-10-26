@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add bounded opt-in checklist, relation/subtask, public linked Doc, supported text/PDF/image attachment and development context. Persist verified images outside the JSON journal; missing or changed captured assets fail closed.
+- Document captured-image retention explicitly: content-addressed deduplication and per-snapshot limits do not impose a global disk quota or automatic expiry. Preserve historical recovery inputs and delivery fences.
 - Add project/issue-type/select-option provider and model bindings, below explicit and saved issue overrides. Stale, conflicting or unavailable selections fail before dispatch; fields cannot select repositories or permission modes.
 - Add normalized SDK tool activity with off/metadata/full privacy, known-credential redaction, reconnect deduplication and text cursors.
 - Use canonical issue identifiers at the start of new native worktree branches, preserving existing worktrees. Add conditional nonclosing PR-reference guidance and selected-execution development links; no automatic pushes, PR creation, merges or completion transitions.
