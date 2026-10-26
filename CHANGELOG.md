@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1
 
 - Add bounded opt-in checklist, relation/subtask, public linked Doc, supported text/PDF/image attachment and development context. Persist verified images outside the JSON journal; missing or changed captured assets fail closed.
 - Document captured-image retention explicitly: content-addressed deduplication and per-snapshot limits do not impose a global disk quota or automatic expiry. Preserve historical recovery inputs and delivery fences.
@@ -44,9 +44,9 @@
 - Reduce settings to native category navigation with nested setup checks and advanced options. Preserve drafts between categories, disable the executions shortcut while changes need resolution, and show save/discard controls only when relevant.
 - Replace smoke-test issue browsing with a pasted issue URL or numeric ID. Validate the configured origin, installation prefix and safe identifier before requesting a reviewed preview.
 
-## 1.0.0
+### Core integration
 
-- Native Paseo 0.13 server/client contributions, host settings, typed RPC, issue browser, command center and host-aware session navigation.
+- Native Paseo 0.13 server/client contributions, host settings, typed RPC, execution activity, command-center actions and host-aware session navigation.
 - In-process adaptation of It's a Plan runner 0.7.0 claims, run/chat heartbeats, results and text events; shared capacity, fail-closed leases, authentication pause and transient reconnect.
 - Multi-project issue resolution by stable IDs, configured checkout/workspace validation, dynamic provider/model/mode selection, native isolated worktrees and deterministic creation keys.
 - Durable run-attempt/session/thread associations, atomic recovered-outcome transfer, conservative ambiguous-send handling and result-only retry.
