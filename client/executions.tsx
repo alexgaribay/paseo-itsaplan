@@ -33,6 +33,6 @@ export function ExecutionsScreen({ openScreen, openSettings, ...props }: PluginS
       <ToolbarButton theme={props.theme} label="Settings" icon="Settings" onPress={openSettings} />
     </View> : <BackLink theme={props.theme} label={parent === "history" ? "Execution history" : parent === "attention" ? "Needs attention" : "Overview"} onPress={() => navigate(parent)} />}
     <Feedback theme={props.theme} error={action.error} />
-    {settings.status === "loading" ? <Loading /> : settings.status !== "ready" ? <SettingsSection title="Configuration unavailable"><Feedback theme={props.theme} error={settings.error} /></SettingsSection> : <Sessions {...props} serverUrl={settings.values.serverUrl} webUrl={webUrl} page={page} sessionKey={props.params.sessionKey} onNavigate={navigate} />}
+    {settings.status === "loading" ? <Loading /> : settings.status !== "ready" ? <SettingsSection title="Configuration unavailable"><Feedback theme={props.theme} error={settings.error} /></SettingsSection> : <Sessions {...props} serverUrl={settings.values.serverUrl} webUrl={webUrl} continuationEnabled={settings.values.continuation?.enabled || false} page={page} sessionKey={props.params.sessionKey} onNavigate={navigate} />}
   </ScreenContent>;
 }

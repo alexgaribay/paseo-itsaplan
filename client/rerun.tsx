@@ -1,14 +1,14 @@
 import { useCallback, useRef, useState } from "react";
 import { Text } from "react-native";
 import { openExternalUrl, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { copyText, Icon, Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection, useToast } from "@getpaseo/plugin/client/ui";
+import { copyText, Icon, Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
 import type { RerunResult } from "../shared/experience";
-import { queueRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, smokePreviewRpc, statusRpc } from "../shared/rpc";
+import { continuationPreviewRpc, queueRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, smokePreviewRpc, statusRpc } from "../shared/rpc";
 import { Feedback, issueUrl, useAction, useResource, Warning } from "./common";
 import { ExecutionPlanDetails } from "./experience";
 import { canDiscardPreview, mergeRequestResult } from "./request-state";
 
-export type RequestSource = { kind: "run"; key: string; issueId: number; operation: "rerun" | "smoke" } | { kind: "issue"; issueId: number };
+export type RequestSource = { kind: "run"; key: string; issueId: number; operation: "rerun" | "smoke" | "continue" } | { kind: "issue"; issueId: number };
 
 function RequestProgress({ result, serverUrl, ...props }: PluginSurfaceProps & { result: RerunResult; serverUrl: string }) {
   const status = useRpc(statusRpc);
@@ -84,18 +84,20 @@ export function HandoffRecovery({ requestId, webUrl, onClose, onChange, ...props
 export function RerunReview({ source, webUrl, onClose, onChange, ...props }: PluginSurfaceProps & { source: RequestSource; webUrl: string; serverUrl: string; onClose(): void; onChange(): void }) {
   const prepare = useRpc(rerunPreviewRpc);
   const prepareSmoke = useRpc(smokePreviewRpc);
+  const prepareContinuation = useRpc(continuationPreviewRpc);
   const submit = useRpc(rerunSubmitRpc);
   const reconcile = useRpc(rerunReconcileRpc);
   const discard = useRpc(rerunDiscardRpc);
   const operation = source.kind === "issue" ? "smoke" : source.operation;
   const sourceKey = source.kind === "run" ? source.key : null;
   const issueId = source.issueId;
-  const load = useCallback(() => sourceKey === null ? prepareSmoke({ issueId }) : prepare({ key: sourceKey, operation }), [prepare, prepareSmoke, sourceKey, issueId, operation]);
+  const load = useCallback(() => sourceKey === null ? prepareSmoke({ issueId }) : operation === "continue" ? prepareContinuation({ key: sourceKey }) : prepare({ key: sourceKey, operation }), [prepare, prepareSmoke, prepareContinuation, sourceKey, issueId, operation]);
   const preview = useResource(load);
   const action = useAction();
   const submitting = useRef(false);
   const [attempted, setAttempted] = useState(false);
   const [result, setResult] = useState<RerunResult>();
+  const [attestedDigest, setAttestedDigest] = useState<string>();
   const blocked = attempted || (result !== undefined && result.state !== "prepared");
   const refresh = () => {
     if (!preview.data) return;
@@ -117,19 +119,19 @@ export function RerunReview({ source, webUrl, onClose, onChange, ...props }: Plu
     });
   };
   const deliver = () => {
-    if (submitting.current || blocked || !preview.data) return;
+    if (submitting.current || blocked || !preview.data || (operation === "continue" && (attestedDigest !== preview.data.planDigest || !preview.data.continuationReview || Date.now() >= preview.data.continuationReview.expiresAt))) return;
     submitting.current = true;
     setAttempted(true);
     const reviewed = preview.data;
     void action.run(async () => {
       try {
-        const next = await submit({ requestId: reviewed.requestId, planDigest: reviewed.planDigest });
+        const next = await submit({ requestId: reviewed.requestId, planDigest: reviewed.planDigest, ...(operation === "continue" ? { attestContinuation: true } : {}) });
         setResult((previous) => mergeRequestResult(previous, next));
         return next.message;
       } finally { onChange(); }
     });
   };
-  return <Modal title={operation === "smoke" ? "Review delegation test" : "Review rerun request"} icon={<Icon name="RotateCcw" size={18} color={props.theme.colors.foreground} />} open onOpenChange={(open) => { if (!open) close(); }}><Modal.Content>
+  return <Modal title={operation === "smoke" ? "Review delegation test" : operation === "continue" ? "Review task continuation" : "Review rerun request"} icon={<Icon name="RotateCcw" size={18} color={props.theme.colors.foreground} />} open onOpenChange={(open) => { if (!open) close(); }}><Modal.Content>
     <SettingsSection title={operation === "smoke" ? "Instruction-only smoke check" : "New upstream request"} info={operation === "smoke" ? "Requests the fixed smoke response without tools through the normal upstream delegation path. No-tools is instruction-only, not enforced isolation. Acceptance is separate from result delivery. This does not change the issue status or directly create a native session." : "Creates a uniquely identified human request for the original task. It does not resend a framed runner prompt, change issue status, or directly start a native session."}>
       {preview.loading && <Feedback theme={props.theme} message="Preparing the execution plan and checking upstream state…" />}
       <Feedback theme={props.theme} error={preview.error} />
@@ -138,10 +140,20 @@ export function RerunReview({ source, webUrl, onClose, onChange, ...props }: Plu
     {preview.data && <>
       <ExecutionPlanDetails plan={preview.data.plan} />
       {preview.data.warnings.map((warning, index) => <Warning key={index} message={warning} />)}
+      {preview.data.continuationReview && <SettingsSection title="Original scope and restrictions" info="This authorizes only the displayed original task in its recorded native session. It is not approval for new requirements, different permissions or arbitrary issue follow-ups.">
+        <SettingsCard>
+          <SettingsRow label="Original task" hint={preview.data.continuationReview.task} />
+          <SettingsRow label="Original system instructions" hint={preview.data.continuationReview.systemPrompt} />
+          <SettingsRow label="Original requirements" hint={preview.data.continuationReview.requirements} />
+          <SettingsRow label="Source session" hint={preview.data.continuationReview.sourceAgentId} />
+          <SettingsRow label="Approval expires" hint={new Date(preview.data.continuationReview.expiresAt).toLocaleString()} />
+          <SettingsSwitch label="Attest compatible unrestricted continuation" hint={preview.data.continuationReview.statement} value={attestedDigest === preview.data.planDigest} disabled={action.pending || blocked} onValueChange={(checked) => setAttestedDigest(checked ? preview.data?.planDigest : undefined)} />
+        </SettingsCard>
+      </SettingsSection>}
       <SettingsSection title="Request delivery" info={preview.data.delivery === "api" ? "Uses the separate human request credential after rechecking saved settings and this plan. A delivered comment does not prove a run was queued." : "No human API credential is configured. Prepare a durable browser handoff, then review and copy its exact comment in a separate action. Post once as a human, then refresh delivery."}>
         <SettingsCard>
           <SettingsRow label="Request ID" hint={preview.data.requestId} />
-          <SettingsAction label="Confirm the reviewed saved execution plan" actionLabel={action.pending ? "Preparing…" : preview.data.delivery === "api" ? "Submit request" : "Prepare browser handoff"} disabled={action.pending || blocked} onPress={deliver} />
+          <SettingsAction label="Confirm the reviewed saved execution plan" actionLabel={action.pending ? "Preparing…" : preview.data.delivery === "api" ? "Submit request" : "Prepare browser handoff"} disabled={action.pending || blocked || (operation === "continue" && (attestedDigest !== preview.data.planDigest || !preview.data.continuationReview || Date.now() >= preview.data.continuationReview.expiresAt))} onPress={deliver} />
           <SettingsAction label="Reconcile against authoritative upstream runs" hint="Unknown or pending delivery blocks duplicate submission. Refresh never reposts the comment." actionLabel="Refresh delivery" disabled={action.pending} onPress={refresh} />
         </SettingsCard>
         {attempted && !result && <Warning message="Submission was attempted. Delivery has not been confirmed. Do not submit again. Refresh delivery first." />}

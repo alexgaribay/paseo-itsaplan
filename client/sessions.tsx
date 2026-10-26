@@ -11,12 +11,15 @@ import { HandoffRecovery, RerunReview } from "./rerun";
 import { DiagnosticsPreview } from "./diagnostics";
 import { HistoricalReview } from "./review";
 import { NavigationRow } from "./navigation";
+import { SelectedContext } from "./selected-context";
+import { TicketReportReview } from "./ticket-report";
 
 type PublicRequest = Omit<RerunRequest, "body" | "planDigest" | "serverUrl" | "continuation" | "continuationScope">;
 export type ExecutionPage = "overview" | "attention" | "history" | "requests" | "controls" | "session";
 type SessionsProps = PluginSurfaceProps & {
   webUrl: string;
   serverUrl: string;
+  continuationEnabled: boolean;
   page: ExecutionPage;
   sessionKey?: string;
   onNavigate(page: ExecutionPage, sessionKey?: string): void;
@@ -92,12 +95,12 @@ function RequestStatus({ requests, refresh, webUrl, title = "Delegation requests
   </>;
 }
 
-function Session({ session, requests, webUrl, serverUrl, refresh, refreshing, ...props }: PluginSurfaceProps & { session: PublicSession; requests: PublicRequest[]; webUrl: string; serverUrl: string; refresh(): void; refreshing: boolean }) {
+function Session({ session, requests, webUrl, serverUrl, continuationEnabled, refresh, refreshing, ...props }: PluginSurfaceProps & { session: PublicSession; requests: PublicRequest[]; webUrl: string; serverUrl: string; continuationEnabled: boolean; refresh(): void; refreshing: boolean }) {
   const cancel = useRpc(cancelRpc);
   const milestone = useRpc(milestoneRpc);
   const action = useAction();
-  const [detail, setDetail] = useState<"technical" | "plan" | "milestone" | null>(null);
-  const [operation, setOperation] = useState<"rerun" | "smoke" | null>(null);
+  const [detail, setDetail] = useState<"technical" | "plan" | "milestone" | "context" | "report" | null>(null);
+  const [operation, setOperation] = useState<"rerun" | "smoke" | "continue" | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [selectedMilestone, setMilestone] = useState<Milestone>("implementation-completed");
   const [evidence, setEvidence] = useState("");
@@ -132,6 +135,8 @@ function Session({ session, requests, webUrl, serverUrl, refresh, refreshing, ..
     <SettingsSection title="Evidence and actions">
       <SettingsCard>
         {session.plan && <NavigationRow theme={props.theme} label="Execution plan" hint="Saved routing, model and workspace choices" onPress={() => setDetail("plan")} />}
+        {issueId !== null && currentServer && <NavigationRow theme={props.theme} label="Task context and development" hint="Captured context and current development links" onPress={() => setDetail("context")} />}
+        {issueId !== null && currentServer && <NavigationRow theme={props.theme} label="Review ticket report" hint={session.ticketReportReceipt ? `Delivery ${session.ticketReportReceipt.state}` : "Review original task permission and exact comment before posting"} onPress={() => setDetail("report")} />}
         <SettingsAction label="Compare historical evidence with current upstream and native state" hint={session.review ? `Reviewed ${timestamp(session.review.reviewedAt)}. Acknowledgment does not confirm delivery or complete the issue.` : "Review acknowledgment never confirms delivery or completes the issue."} actionLabel="Compare and review" disabled={action.pending || !currentServer} onPress={() => setReviewing(true)} />
         {issueId !== null && currentServer && <NavigationRow theme={props.theme} label="Submit milestone evidence" hint="Apply the configured column policy only with explicit evidence" disabled={action.pending} onPress={() => setDetail("milestone")} />}
         <NavigationRow theme={props.theme} label="Technical execution details" hint="Provider, heartbeat, recorded identifiers and lease limits" onPress={() => setDetail("technical")} />
@@ -141,11 +146,12 @@ function Session({ session, requests, webUrl, serverUrl, refresh, refreshing, ..
       <SettingsCard>
         <SettingsAction label="Rerun original task" actionLabel="Review rerun" disabled={duplicate || action.pending || (!terminalPhases[session.phase] && session.phase !== "uncertain")} onPress={() => setOperation("rerun")} />
         <SettingsAction label="No-tools smoke check" hint="Instruction-only no-tools request. Does not change issue status." actionLabel="Review smoke check" disabled={duplicate || action.pending || (!terminalPhases[session.phase] && session.phase !== "uncertain")} onPress={() => setOperation("smoke")} />
+        {continuationEnabled && <SettingsAction label="Continue the verified original task" hint="Explicit scope review required. Restricted, stale or uncertain sessions cannot be reused." actionLabel="Review continuation" disabled={duplicate || action.pending || session.phase !== "finished" || session.result?.status !== "success"} onPress={() => setOperation("continue")} />}
       </SettingsCard>
     </SettingsSection>}
     <RequestStatus {...props} serverUrl={serverUrl} webUrl={webUrl} requests={sourceRequests} refresh={refresh} title="Requests from this execution" />
     <Feedback theme={props.theme} error={action.error} message={action.message} />
-    {detail && <Modal title={detail === "plan" ? "Execution plan" : detail === "milestone" ? "Observed milestone evidence" : "Technical execution details"} open onOpenChange={(open) => { if (!open && !action.pending) setDetail(null); }}><Modal.Content>
+    {detail && detail !== "context" && detail !== "report" && <Modal title={detail === "plan" ? "Execution plan" : detail === "milestone" ? "Observed milestone evidence" : "Technical execution details"} open onOpenChange={(open) => { if (!open && !action.pending) setDetail(null); }}><Modal.Content>
       {detail === "plan" && session.plan && <ExecutionPlanDetails plan={session.plan} />}
       {detail === "technical" && <SettingsSection title="Recorded execution details" info="These are recorded observations, not proof of a current lease or a stopped native agent.">
         <SettingsCard>
@@ -157,6 +163,7 @@ function Session({ session, requests, webUrl, serverUrl, refresh, refreshing, ..
           <SettingsRow label="Reviewed at" hint={session.review ? timestamp(session.review.reviewedAt) : "Not reviewed"} />
           <SettingsRow label="Workspace" hint={session.workspaceId || "No workspace override"} />
           <SettingsRow label="Repository directory" hint={session.cwd} />
+          {session.branchName && session.plan?.worktree && <SettingsRow label="Requested issue worktree branch" hint={session.branchName} />}
           {session.limits && <SettingsRow label="Recorded execution limits" hint={`Timeout ${session.limits.executionTimeoutMs} ms · lease safety ${session.limits.leaseSafetyMs} ms`} />}
           {session.evidence && <SettingsRow label="Observed tool use" hint={`${session.evidence.toolCallCount ?? "Unknown"} calls · history ${session.evidence.historyComplete ? "complete" : "incomplete"}`} />}
         </SettingsCard>
@@ -170,6 +177,8 @@ function Session({ session, requests, webUrl, serverUrl, refresh, refreshing, ..
       </SettingsSection>}
       <Feedback theme={props.theme} error={action.error} message={action.message} />
     </Modal.Content></Modal>}
+    {detail === "context" && <SelectedContext {...props} sessionKey={session.key} onClose={() => setDetail(null)} />}
+    {detail === "report" && <TicketReportReview {...props} sessionKey={session.key} onClose={() => setDetail(null)} onChange={refresh} />}
     {operation && issueId !== null && <RerunReview {...props} source={{ kind: "run", key: session.key, issueId, operation }} serverUrl={serverUrl} webUrl={webUrl} onClose={() => setOperation(null)} onChange={refresh} />}
     {reviewing && <HistoricalReview {...props} session={session} onClose={() => setReviewing(false)} onChange={refresh} />}
   </>;
