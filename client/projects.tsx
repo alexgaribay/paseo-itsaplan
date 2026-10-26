@@ -7,6 +7,7 @@ import type { Project, RepositoryMatch } from "../shared/models";
 import { providersRpc } from "../shared/rpc";
 import { Feedback, ProviderErrors, RefreshButton, SelectionFields, useResource } from "./common";
 import { PolicyFields } from "./mappings";
+import { ContextSettings } from "./context-settings";
 
 type ProjectRow = { id: string; title: string };
 
@@ -16,7 +17,8 @@ function savedReadinessHint(readiness?: Readiness["projects"][number]): string {
   return [state, ...readiness.problems].join(" ");
 }
 
-function ProjectEditor({ title, initial, match, config, onApply, onRemove, onClose, disabled, ...props }: PluginSurfaceProps & {
+function ProjectEditor({ projectId, title, initial, match, config, onApply, onRemove, onClose, disabled, ...props }: PluginSurfaceProps & {
+  projectId: number;
   title: string;
   initial?: ProjectMapping;
   match?: RepositoryMatch;
@@ -28,6 +30,9 @@ function ProjectEditor({ title, initial, match, config, onApply, onRemove, onClo
 }) {
   const [mapping, setMapping] = useState<ProjectMapping>(() => initial || projectMappingSchema.parse({}));
   const set = (patch: Partial<ProjectMapping>) => setMapping((current) => ({ ...current, ...patch }));
+  const [fieldValidation, setFieldValidation] = useState<{ bindings: ProjectMapping["fieldBindings"]; error?: string }>();
+  const onFieldValidation = useCallback((error?: string) => setFieldValidation({ bindings: mapping.fieldBindings, error }), [mapping.fieldBindings]);
+  const fieldError = mapping.fieldBindings?.length ? fieldValidation?.bindings !== mapping.fieldBindings ? "Validating saved field bindings…" : fieldValidation?.error : undefined;
   const matchedPath = match?.status === "matched" ? match.candidate.repository : "";
   const paseo = usePaseo();
   const loadWorkspaces = useCallback(() => paseo.workspaces.list(), [paseo]);
@@ -74,11 +79,12 @@ function ProjectEditor({ title, initial, match, config, onApply, onRemove, onClo
       <SettingsSection title="Issue status transitions" info="Optional destination column IDs for this project's milestones. Blank fields inherit global policies. Transitions require explicit evidence; a finished agent turn never completes an issue.">
         <SettingsCard><PolicyFields value={mapping.statusPolicy || {}} onChange={(statusPolicy) => set({ statusPolicy })} disabled={disabled} inherit /></SettingsCard>
       </SettingsSection>
+      <ContextSettings {...props} projectId={projectId} mapping={mapping} onChange={set} providers={catalog.data || []} disabled={disabled} onValidationChange={onFieldValidation} />
       <SettingsCard>
-        <SettingsAction label="Project settings" hint="Updates the settings draft." actionLabel="Apply" disabled={disabled || !!error} onPress={() => onApply(mapping)} />
+        <SettingsAction label="Project settings" hint="Updates the settings draft." actionLabel="Apply" disabled={disabled || !!error || !!fieldError} onPress={() => { if (!error && !fieldError) onApply(mapping); }} />
         {initial && <SettingsAction label="Project configuration" hint="Repository files, sessions, and worktrees are kept." actionLabel="Remove" disabled={disabled} onPress={onRemove} />}
       </SettingsCard>
-      <Feedback theme={props.theme} error={error} />
+      <Feedback theme={props.theme} error={error || fieldError} />
     </Modal.Content>
   </Modal>;
 }
@@ -163,7 +169,7 @@ export function ProjectRepositories({ config, projects, loading, error, connecte
       {rows.length > 0 && <SettingsCard><SettingsAction label="Project agent defaults" hint="Choose projects explicitly, then set their provider, model, and mode in the draft." actionLabel="Bulk configure" disabled={disabled || loading} onPress={() => setBulkOpen(true)} /></SettingsCard>}
       <Feedback theme={props.theme} error={error} message={!connected ? "Save the API connection and execution key to load projects." : loading ? "Loading projects…" : !rows.length && !error ? "No projects available. Check the external agent's project access." : undefined} />
     </SettingsSection>
-    {editing && <ProjectEditor {...props} title={editing.title} initial={config.projects[editing.id]} match={projects.find((project) => String(project.id) === editing.id)?.repositoryMatch} config={config} disabled={disabled} onClose={() => setEditing(null)} onApply={(mapping) => { onChange({ ...config.projects, [editing.id]: mapping }); setEditing(null); }} onRemove={() => { const next = { ...config.projects }; delete next[editing.id]; onChange(next); setEditing(null); }} />}
+    {editing && <ProjectEditor key={editing.id} {...props} projectId={Number(editing.id)} title={editing.title} initial={config.projects[editing.id]} match={projects.find((project) => String(project.id) === editing.id)?.repositoryMatch} config={config} disabled={disabled} onClose={() => setEditing(null)} onApply={(mapping) => { onChange({ ...config.projects, [editing.id]: mapping }); setEditing(null); }} onRemove={() => { const next = { ...config.projects }; delete next[editing.id]; onChange(next); setEditing(null); }} />}
     {bulkOpen && <BulkDefaults {...props} rows={rows} disabled={disabled} onClose={() => setBulkOpen(false)} onApply={(projectIds, selection) => {
       const next = { ...config.projects };
       for (const id of projectIds) next[id] = next[id] ? { ...next[id], ...selection } : projectMappingSchema.parse(selection);
