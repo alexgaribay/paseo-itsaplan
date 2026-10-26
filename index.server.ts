@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { preferences } from "./shared/config";
-import { attachRpc, cancelRpc, controlRpc, credentialsRpc, detailRpc, diagnosticsRpc, hostRpc, markReviewedRpc, milestoneRpc, planRpc, projectsRpc, providersRpc, queueRpc, readinessRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, reviewRpc, searchRpc, smokePreviewRpc, startRpc, statusRpc, testConnectionRpc, testHostRpc } from "./shared/rpc";
+import { attachRpc, cancelRpc, continuationPreviewRpc, controlRpc, credentialsRpc, customFieldsRpc, detailRpc, diagnosticsRpc, hostRpc, markReviewedRpc, milestoneRpc, planRpc, projectsRpc, providersRpc, queueRpc, readinessRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, reviewRpc, searchRpc, smokePreviewRpc, startRpc, statusRpc, taskContextRpc, testConnectionRpc, testHostRpc, ticketReportPreviewRpc, ticketReportReconcileRpc, ticketReportSubmitRpc } from "./shared/rpc";
 import { PrivateStorage, dataDirectory } from "./server/storage";
 import { IntegrationService, publicSession } from "./server/service";
 import { safeError } from "./server/engine";
@@ -9,9 +9,11 @@ import { ConfigurationError } from "./server/errors";
 import { describeHost } from "./server/host";
 import { discoverProjects } from "./server/projects";
 import { planForIssue, queuePreview, readiness, type ExperienceContext } from "./server/experience";
-import { discardRerun, prepareRerun, prepareSmoke, reconcileRerun, recoverHandoff, submitRerun } from "./server/rerun";
+import { discardRerun, prepareContinuation, prepareRerun, prepareSmoke, reconcileRerun, recoverHandoff, submitRerun } from "./server/rerun";
 import { diagnostics } from "./server/diagnostics";
 import { markExecutionReviewed, reviewExecution } from "./server/review";
+import { prepareTicketReport, reconcileTicketReport, submitTicketReport } from "./server/ticket-report";
+import { selectedExecutionContext } from "./server/selected-context";
 
 async function guarded<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
@@ -57,6 +59,8 @@ export default function contribute(server: PluginServerContext) {
     return gateway.catalog(cwd);
   }));
   server.handle(projectsRpc, (_input, { paseo }) => guarded(async () => discoverProjects(await service.protocol(), service.gatewayFor(paseo), AbortSignal.timeout(30_000))));
+  server.handle(customFieldsRpc, ({ projectId, issueTypeId }) => guarded(async () => (await service.protocol()).customFields(projectId, issueTypeId)));
+  server.handle(taskContextRpc, ({ key }, { paseo }) => guarded(async () => selectedExecutionContext(await experience(paseo), key)));
   server.handle(searchRpc, ({ projectId, query }) => guarded(async () => (await service.protocol()).search(projectId, query)));
   server.handle(detailRpc, ({ issueId }) => guarded(async () => (await service.protocol()).issue(issueId)));
   server.handle(startRpc, ({ issueId, provider, model, modeId }, { paseo }) => guarded(async () => {
@@ -98,6 +102,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(rerunReconcileRpc, (input, { paseo }) => guarded(async () => reconcileRerun(await experience(paseo), input)));
   server.handle(rerunDiscardRpc, (input, { paseo }) => guarded(async () => discardRerun(await experience(paseo), input)));
   server.handle(smokePreviewRpc, (input, { paseo }) => guarded(async () => prepareSmoke(await experience(paseo), input)));
+  server.handle(continuationPreviewRpc, (input, { paseo }) => guarded(async () => prepareContinuation(await experience(paseo), input)));
+  server.handle(ticketReportPreviewRpc, (input, { paseo }) => guarded(async () => prepareTicketReport(await experience(paseo), input)));
+  server.handle(ticketReportSubmitRpc, (input, { paseo }) => guarded(async () => submitTicketReport(await experience(paseo), input)));
+  server.handle(ticketReportReconcileRpc, (input, { paseo }) => guarded(async () => reconcileTicketReport(await experience(paseo), input)));
   server.handle(recoverHandoffRpc, (input, { paseo }) => guarded(async () => recoverHandoff(await experience(paseo), input)));
   server.handle(reviewRpc, (input, { paseo }) => guarded(async () => reviewExecution(await experience(paseo), input)));
   server.handle(markReviewedRpc, (input, { paseo }) => guarded(async () => markExecutionReviewed(await experience(paseo), input)));
