@@ -28,7 +28,7 @@ export function SettingsScreen(props: PluginSurfaceProps & { openExecutions(): v
 
 type ReadySettings = Extract<SettingsState<typeof configSchema>, { status: "ready" }>;
 type Detail = "connection" | "execution" | "projects" | "requests" | "advanced" | "checks";
-const panels = ["polling", "chat", "overrides", "policies", "mcp"] as const;
+const panels = ["runtime", "polling", "chat", "overrides", "policies", "mcp"] as const;
 
 function SettingsEditor({ settings, openExecutions, ...props }: PluginSurfaceProps & { settings: ReadySettings; openExecutions(): void }) {
   const [draft, setDraft] = useState<{ values: Config; revision: string }>({ values: settings.values, revision: settings.revision });
@@ -74,6 +74,7 @@ function SettingsEditor({ settings, openExecutions, ...props }: PluginSurfacePro
   };
   const validationError = configurationError(values);
   const summaries: Record<(typeof panels)[number], string> = {
+    runtime: values.continuation?.enabled ? "Reviewed continuation allowed" : values.activityPrivacy && values.activityPrivacy !== "off" ? "Tool activity sharing enabled" : "Fresh sessions · Tool activity off",
     polling: `Every ${values.pollIntervalMs / 1000} seconds`,
     chat: `${Object.keys(values.chatProjects).length} threads`,
     overrides: `${Object.keys(values.issueOverrides).length} issues`,

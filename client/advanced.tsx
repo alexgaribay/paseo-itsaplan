@@ -31,6 +31,7 @@ export const advancedPanels = {
   overrides: "Issue overrides",
   policies: "Issue status transitions",
   mcp: "Agent MCP",
+  runtime: "Execution behavior",
 } as const;
 export type AdvancedPanel = keyof typeof advancedPanels;
 
@@ -63,6 +64,14 @@ export function AdvancedEditor({ panel, config, projects, providers, onApply, on
       {panel === "policies" && <SettingsSection title="Destination columns" info="Enter a column ID for each milestone, or leave blank to disable its transition. Submit evidence from a linked session to change status. An agent turn finishing never marks an issue complete.">
         <SettingsCard><PolicyFields value={values.statusPolicy} onChange={(statusPolicy) => set({ statusPolicy })} disabled={disabled} /></SettingsCard>
       </SettingsSection>}
+      {panel === "runtime" && <>
+        <SettingsSection title="Activity sharing" info="Optional tool activity in It's a Plan's existing execution trace and chat. Off shares no tool events. Detailed traces may contain source code or sensitive tool data; known plugin credentials are always redacted.">
+          <SettingsCard><SettingsSelect label="Tool activity" value={values.activityPrivacy || "off"} options={[{ value: "off", label: "Off" }, { value: "metadata", label: "Tool names only" }, { value: "full", label: "Arguments and results" }]} disabled={disabled} onValueChange={(privacy) => set({ activityPrivacy: privacy as Config["activityPrivacy"] })} /></SettingsCard>
+        </SettingsSection>
+        <SettingsSection title="Session continuation" info="Fresh sessions remain the default. Enabling this only allows a separate, explicitly reviewed continuation request. Matching an issue never resumes a session. Smoke, exact-output, no-tools, stale, failed and uncertain sources are blocked. Repository, provider, model, permission mode and task scope are rechecked before reuse.">
+          <SettingsCard><SettingsSwitch label="Allow reviewed continuation" value={values.continuation?.enabled || false} disabled={disabled} onValueChange={(enabled) => set({ continuation: { enabled } })} /></SettingsCard>
+        </SettingsSection>
+      </>}
       {panel === "mcp" && <>
         <SettingsSection title="Connection" info="Optional agent-side access to It's a Plan. Task claiming, heartbeats, routing, and result reporting work without MCP. Unknown or unsupported providers continue without it.">
           <SettingsCard>
