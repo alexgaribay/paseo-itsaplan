@@ -22,7 +22,7 @@ npm run typecheck
 npm test
 ```
 
-Latest observed after the optional workflow integrations and final project-editor disclosure change: **both TypeScript configurations passed; 573 tests passed, 0 failed, 1866 assertions across 24 files**. `npm test` includes server and native client-state tests.
+Latest observed after the combined multi-bot, named-profile and default-enabled project changes: **both TypeScript configurations passed; 604 tests passed, 0 failed, 1982 assertions across 25 files**. `npm test` includes server and native client-state tests.
 
 | Area | Behavioral coverage |
 | --- | --- |
@@ -31,6 +31,7 @@ Latest observed after the optional workflow integrations and final project-edito
 | `server/engine.test.ts` | End-to-end mocked claim/routing/creation/prompt/heartbeat/completion/report/persist flow; multi-project selection; reservations/concurrency; network/auth failure; duplicate claims; timeout/cancellation; stale lease; shutdown during send/result; restart windows; unavailable/missing/archived sessions; lost ACK; attempt transfer after uncertain report; chat initial/follow-up/reclaim; atomic recovery; explicit per-project milestone transitions only. |
 | `server/storage.test.ts` | Durable reload, corruption preservation, restricted files, concurrent credential merges/equality checks, live/dead owner locks and stale-PID replacement contention, serialized journal updates and atomic batch recovery. |
 | `server/service.test.ts` | Manual-session reconciliation after missed lifecycle events: active/idle/missing/archived native state, send-acknowledgment grace, temporary lookup failure, and an observed completion winning a stale snapshot. Also verifies that an authenticated non-agent account produces an authentication error before automatic execution starts, without exposing credentials or identity details. |
+| `server/bots.test.ts` | Legacy default storage, per-bot keys/journals/pause state, shared credentials/configuration, independent authenticated pollers, duplicate-account rejection, teardown and retired-bot delivery/restart recovery. |
 | `server/repository-matching.test.ts` | Real disposable Git checkouts, canonical roots, registered-only discovery, safe remote normalization, HTTP/custom ports, credential stripping, independent clones vs shared worktrees, stale/malformed catalogs and cancellation. |
 | `server/projects.test.ts` | Per-project permission failures, complete-catalog failure, explicit overrides without discovery privileges and cancellation propagation. |
 | `server/host.test.ts` | Private runtime metadata, home/transport resolution, readiness/staleness, target-bound credentials, manual endpoint migration boundaries, initial/reconnect identity fences, deadlines and transport/subscription cleanup. |
@@ -294,3 +295,23 @@ Created the explicitly requested, unassigned [PIAP-1 upstream follow-up](https:/
 ### Captured-image retention clarification
 
 Follow-up source review confirmed that asset publication deduplicates by SHA-256 and enforces per-snapshot limits, while storage drains in-flight operations on close. Neither layer performs historical asset eviction or enforces a global disk quota. Documented this retention tradeoff explicitly, including interrupted-capture leftovers, unchanged data after opt-out, and the risk of deleting recovery inputs or delivery fences. This follow-up changes documentation only; the last source validation remains both TypeScript configurations and **573 passing tests**. No additional runtime action or live configuration change was made.
+
+## Multiple bots and named Paseo profiles — 2026-10-27
+
+- Final combined source check: both TypeScript configurations passed; the complete server/client suite passed **604 tests, 0 failures, 1982 assertions across 25 files**.
+- Added behavior coverage for named-profile authority over shared/manual/field settings, missing/invalid profiles, captured bundles surviving profile or binding edits, thinking/features in explicit-model and provider-default creation, and changed/unverifiable chat or continuation settings.
+- Two engines dispatched the same upstream task identity against one native gateway fixture and produced separate bot-scoped idempotency keys and native agent IDs. The default bot's legacy key shape remains unchanged.
+- Launched the actual installed **Paseo 0.13.2** daemon with an isolated canonical temporary home, the current plugin source and two named local profile definitions. Through native SDK/plugin RPCs, saved two bot registrations and separate disposable execution keys, discovered both profiles, observed distinct private storage paths, paused one bot without pausing the other, and confirmed unknown-bot and duplicate-key rejection. Confirmed the native client bundle contained the new bot/profile surface.
+- The actual native execution page rendered the selected-bot control and both registered bot choices. Browser menu interaction failed with off-viewport bounds; screenshot capture timed out. **Bot switching and the profile editor are not visually/interactively verified.** No screenshot-based UI acceptance is claimed.
+- No real upstream assignment, queue consumption, model turn or live native profile-based session creation was performed in this pass. Creation/application behavior is covered by the SDK-boundary tests, not a live provider run. The disposable keys were not upstream credentials.
+- Stopped the owned daemon, closed the owned browser and removed the temporary home, scripts and disposable keys. The user's existing Paseo daemon, settings and credentials were not changed.
+
+## Default-enabled project routing — 2026-10-27
+
+Projects without saved overrides now participate automatically when shared automatic delegation and the selected bot are enabled. An explicit project `automatic: false` remains an opt-out. Repository resolution still requires a configured checkout or an unambiguous registered-repository match; unavailable or unresolved metadata never selects a fallback repository.
+
+The final suite includes absent/inherited project execution, explicit opt-outs, unresolved repositories, unsaved-project smoke delivery and continuation, and pinned chat routing. Removed the incidental whole-object default assertion while retaining duplicate-binding rejection; the structural diagnostics fixture now explicitly configures its disabled project. Removed exact-copy assertions rather than pinning new wording.
+
+The implementation owner's loopback HTTP smoke reported successful default-enabled unsaved-project execution, explicit-off rejection and unresolved-repository rejection. This was an isolated native gateway fixture, not a live provider execution. The default-on project editor and chat picker were not visually re-exercised. No live daemon reload, local settings write or upstream task creation was performed for the commit/push checks.
+
+The package dry run reported `paseo-itsaplan@0.0.1` and included all 87 release files. No package archive was created by the dry run.

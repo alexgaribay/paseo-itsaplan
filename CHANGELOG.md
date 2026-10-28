@@ -2,6 +2,11 @@
 
 ## 0.0.1
 
+- Make project execution opt-out: newly authorized and unsaved projects inherit execution defaults and automatic repository matching without per-project enablement. Preserve explicit project opt-outs, global/bot controls, repository safety checks and pinned recovery/chat routing. Align readiness, request delivery and settings with the enabled default.
+- Run multiple external bots on one Paseo host with shared connection/project/policy settings, separate execution keys, and named local Paseo agent-profile bindings.
+- Add bot-scoped settings/execution selection and RPC inputs. Preserve legacy default-bot state, isolate private journals and pause controls, and reject duplicate execution keys and detected account collisions.
+- Apply complete named profile launch bundles, including thinking/features; capture them in plans without blending shared overrides. Missing profiles fail closed, and changed or unverifiable native settings block conversation reuse.
+- Namespace nondefault native creation/session keys by bot, including identical upstream task IDs. Retain disabled/retired bot state and pending delivery across restarts.
 - Add bounded opt-in checklist, relation/subtask, public linked Doc, supported text/PDF/image attachment and development context. Persist verified images outside the JSON journal; missing or changed captured assets fail closed.
 - Document captured-image retention explicitly: content-addressed deduplication and per-snapshot limits do not impose a global disk quota or automatic expiry. Preserve historical recovery inputs and delivery fences.
 - Add project/issue-type/select-option provider and model bindings, below explicit and saved issue overrides. Stale, conflicting or unavailable selections fail before dispatch; fields cannot select repositories or permission modes.
@@ -18,7 +23,7 @@
 - Label the required external-agent execution key explicitly, distinguish it from personal/MCP credentials, and show setup guidance before entry. Preserve the actionable non-agent identity error in connection tests and startup status without exposing remote error bodies; display connection-test feedback with the connection controls.
 - Align settings with Paseo's native section help, header actions, modal editors, and compact bottom sheets. Remove description-only rows, condense project setup to a named list, and keep advanced configuration and execution history out of the overview.
 - Add focused write-only credential editors, explicit apply/save/discard behavior, clearer provider-default labels, and human-readable timing units without changing stored settings or execution contracts.
-- Automatically match connected It's a Plan repository links to registered Git checkouts on the owning Paseo host. Preserve explicit overrides, expose ambiguity through a native checkout picker, and retain per-project execution opt-in. Permission failures remain per-project and never select a fallback.
+- Automatically match connected It's a Plan repository links to registered Git checkouts on the owning Paseo host. Preserve explicit overrides and expose ambiguity through a native checkout picker. Permission failures remain per-project and never select a fallback.
 - Discover the owning Paseo endpoint and identity from runtime metadata, use its private local credential by default, and add a non-claiming host connection test. Keep legacy custom endpoints as explicit manual overrides and fence both connection modes against wrong-host reconnections.
 - Persist resolved source mappings before native creation so restarts and chat follow-ups cannot silently move to a different checkout. Retain source mappings across recovered result delivery; only reuse earlier-attempt sessions when their source repository matches.
 - Preserve blank model overrides through native Paseo creation instead of selecting the first catalog entry. Keep explicit-model validation and public API creation; use the pinned SDK adapter only where public 0.13 creation requires a model string.
@@ -27,7 +32,7 @@
 - Review effective host/repository/worktree/provider/model/mode plans with selection provenance; expose actual session selection and require compatible reuse. Preserve chat continuity under unchanged defaults and reject incompatible changes without replacing the conversation.
 - Show actionable execution stages, approvals, heartbeats, cancellation acknowledgment, delivery and acceptance in focused native session dialogs; retain explicit evidence-based milestones.
 - Separate persisted pause from acknowledged stop. Capture immutable per-claim settings/limits; apply safe changes to future claims and drain connection changes instead of interrupting active work.
-- Add explicitly selected bulk project defaults without automatic opt-in or repository guessing; keep the global, unfiltered claim limitation visible.
+- Add explicitly selected bulk project defaults without changing global delegation, existing project opt-outs or repository selection; keep the global, unfiltered claim limitation visible.
 - Add reviewed upstream rerun/smoke requests through human mentions, with an optional separate human credential or browser handoff. Persist request nonces before delivery, dismiss untouched previews and reconcile uncertain submissions without reposting.
 - Add structurally redacted, copyable diagnostics and visible clipboard failure feedback.
 - Deny pending approvals before native cancellation, retain lease maintenance during unconfirmed stop while still valid, and fence new claims until reconciliation. Reject late writes from closed storage owners so retired backends cannot overwrite replacement state.
