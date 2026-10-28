@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { AgentProfileSchema } from "@getpaseo/protocol/messages";
 import { createPaseoApi, type PaseoApi, type PaseoAgent, type PaseoAgentConfig, type PaseoAgentCreateOptions, type PaseoAgentHandle, type PaseoAgentTimelineEvent, type PaseoAgentTimelineSubscription } from "@getpaseo/client";
 import type { CreateAgentRequestOptions, FetchAgentTimelinePayload } from "@getpaseo/client/internal/daemon-client";
 import { slugify } from "@getpaseo/protocol/branch-slug";
@@ -8,7 +10,7 @@ import { httpUrl } from "../shared/config";
 import type { AgUiEvent, Provider, Result } from "../shared/models";
 import type { TaskContextSnapshot } from "../shared/task-context";
 import type { ExecutionEvidence } from "../shared/experience";
-import { resolvePreferences } from "./plan";
+import { matchesProfileSelection, resolvePreferences } from "./plan";
 import type { Gateway, Secrets, SessionSnapshot } from "./contracts";
 import { ConfigurationError } from "./errors";
 import { git, repository } from "./git";
@@ -33,6 +35,8 @@ function snapshot(agent: PaseoAgent, lastMessage?: string): SessionSnapshot {
     active: agent.status === "running" || agent.status === "initializing" || !!agent.activeTurn || agent.pendingPermissions.length > 0,
     archived: !!agent.archivedAt, error: agent.lastError ? "Paseo provider reported an error" : undefined,
     ...(lastMessage === undefined ? {} : { lastMessage }),
+    ...(agent.thinkingOptionId === undefined ? {} : { thinkingOptionId: agent.thinkingOptionId }),
+    ...(agent.features === undefined ? {} : { featureValues: Object.fromEntries(agent.features.map(({ id, value }) => [id, value])) }),
   };
 }
 
@@ -340,8 +344,35 @@ export class PaseoGateway implements Gateway {
     }));
   }
 
+  async profiles(): Promise<Selection[]> {
+    let profiles: unknown;
+    try { profiles = (await this.paseo.config.get()).config.agentProfiles ?? []; }
+    catch { throw new ConfigurationError("Unable to read named Paseo profiles from the owning host"); }
+    const parsed = AgentProfileSchema.array().safeParse(profiles);
+    if (!parsed.success) throw new ConfigurationError("Named Paseo profile configuration is invalid");
+    const ids = new Set<string>();
+    return parsed.data.map((profile) => {
+      if (!profile.id.trim() || !profile.name.trim() || !profile.provider.trim() || profile.provider.includes("/") || ids.has(profile.id)) throw new ConfigurationError("Named Paseo profile configuration is invalid");
+      ids.add(profile.id);
+      return {
+        profileId: profile.id, profileName: profile.name, provider: profile.provider,
+        model: profile.model ?? "", modeId: profile.modeId ?? "",
+        ...(profile.thinkingOptionId === undefined ? {} : { thinkingOptionId: profile.thinkingOptionId }),
+        ...(profile.featureValues === undefined ? {} : { featureValues: structuredClone(profile.featureValues) }),
+      };
+    });
+  }
+
   async select(config: Config, project: ProjectMapping, override: Partial<Selection> = {}): Promise<Selection> {
-    const { selection: { provider, model, modeId } } = resolvePreferences(config, project, override);
+    const selection = config.profileId
+      ? (await this.profiles()).find((profile) => profile.profileId === config.profileId)
+      : resolvePreferences(config, project, override).selection;
+    if (!selection) throw new ConfigurationError("The selected named Paseo profile is missing or was deleted. Choose an existing local profile.");
+    return this.validateSelection(selection, project);
+  }
+
+  private async validateSelection(selection: Selection, project: ProjectMapping): Promise<Selection> {
+    const { provider, model, modeId } = selection;
     if (!provider || provider.includes("/")) throw new ConfigurationError("Configure an explicit Paseo provider");
     const available = await this.paseo.providers.listAvailable();
     if (available.error || !available.providers.some((entry) => entry.provider === provider && entry.available)) {
@@ -354,16 +385,17 @@ export class PaseoGateway implements Gateway {
     ]);
     if (model && (models?.error || !models?.models?.some((entry) => entry.id === model && entry.isSelectable !== false))) throw new ConfigurationError("Selected Paseo model is unavailable");
     if (modeId && (modes?.error || !modes?.modes?.some((entry) => entry.id === modeId))) throw new ConfigurationError("Selected Paseo mode is unavailable");
-    return { provider, model, modeId };
+    return selection;
   }
 
   async create(input: CreateInput): Promise<SessionSnapshot> {
     const source = await repository(input.project.repository);
-    const validate = async (agent: PaseoAgent, selection: Selection, workspaceId?: string, branch?: string) => {
+    const validate = async (agent: PaseoAgent, selection: Selection, workspaceId?: string, branch?: string, requireVerified = true) => {
       if (agent.id !== input.agentId || agent.provider !== selection.provider || agent.archivedAt ||
         (selection.model && agent.model !== selection.model) || (selection.modeId && agent.currentModeId !== selection.modeId)) {
         throw new ConfigurationError("Created agent does not match the requested session");
       }
+      if (!matchesProfileSelection(snapshot(agent), selection, requireVerified)) throw new ConfigurationError("Paseo session thinking or feature settings differ from the captured profile or cannot be verified. Start a fresh thread.");
       if (agent.labels["itsaplan.key"] !== input.key ||
         (agent.labels["itsaplan.issueId"] && agent.labels["itsaplan.issueId"] !== String(input.issueId))) {
         throw new ConfigurationError("Created agent has a conflicting task association");
@@ -379,7 +411,7 @@ export class PaseoGateway implements Gateway {
     const existing = await this.paseo.agents.ref(input.agentId).refresh();
     if (existing) return validate(existing.agent, input.selection, input.project.worktree ? undefined : input.project.workspaceId || undefined);
 
-    const selection = await this.select(input.config, input.project, input.selection);
+    const selection = await this.validateSelection(input.selection, input.project);
     let workspace;
     if (input.project.workspaceId) {
       workspace = this.paseo.workspaces.ref(input.project.workspaceId);
@@ -416,6 +448,8 @@ export class PaseoGateway implements Gateway {
     const agentConfig: PaseoAgentConfig = {
       provider: selection.model ? `${selection.provider}/${selection.model}` : selection.provider,
       ...(selection.modeId ? { modeId: selection.modeId } : {}),
+      ...(selection.thinkingOptionId === undefined ? {} : { thinkingOptionId: selection.thinkingOptionId }),
+      ...(selection.featureValues === undefined ? {} : { featureValues: selection.featureValues }),
       systemPrompt: `${input.systemPrompt}\n\n${safetyInstructions}`,
       ...await this.mcp(input, selection.provider),
     };
@@ -440,7 +474,7 @@ export class PaseoGateway implements Gateway {
     }
     const result = await handle.refresh();
     if (!result) throw new ConfigurationError("Created agent is unavailable");
-    return validate(result.agent, selection, useWorkspace ? workspace!.id : undefined, input.project.worktree ? branch : undefined);
+    return validate(result.agent, selection, useWorkspace ? workspace!.id : undefined, input.project.worktree ? branch : undefined, false);
   }
 
   private async mcp(input: CreateInput, provider: string): Promise<Pick<PaseoAgentConfig, "mcpServers" | "toolPolicy">> {
@@ -495,7 +529,7 @@ export class PaseoGateway implements Gateway {
       admission.signal.throwIfAborted();
       const expected = admission.expected;
       const actual = snapshot(current.agent);
-      if (actual.error || actual.id !== expected.id || actual.cwd !== expected.cwd || actual.workspaceId !== expected.workspaceId || actual.provider !== expected.provider || actual.model !== expected.model || actual.modeId !== expected.modeId || actual.lastUserMessageAt !== expected.lastUserMessageAt) throw new ConfigurationError("Paseo session changed during prompt admission; no prompt was sent");
+      if (actual.error || actual.id !== expected.id || actual.cwd !== expected.cwd || actual.workspaceId !== expected.workspaceId || actual.provider !== expected.provider || actual.model !== expected.model || actual.modeId !== expected.modeId || actual.thinkingOptionId !== expected.thinkingOptionId || !isDeepStrictEqual(actual.featureValues, expected.featureValues) || actual.lastUserMessageAt !== expected.lastUserMessageAt) throw new ConfigurationError("Paseo session changed during prompt admission; no prompt was sent");
       admission.onDispatch();
     }
     this.sends.set(agentId, messageId);

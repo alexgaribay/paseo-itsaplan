@@ -4,10 +4,11 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { configSchema } from "../shared/config";
+import { configSchema, projectMappingSchema } from "../shared/config";
 import type { SessionRecord } from "../shared/models";
 import type { Gateway, SessionSnapshot } from "./contracts";
-import { assertContinuationGrant, assertSourceCurrent, captureProvenance, continuationScope, sourceFacts } from "./continuation";
+import { assertContinuationGrant, assertSourceCurrent, assertSourceNative, captureProvenance, continuationScope, executionConfigDigest, sourceFacts } from "./continuation";
+import { ConfigurationError } from "./errors";
 import type { ExperienceContext } from "./experience";
 import { makePlan, resolvePreferences } from "./plan";
 import { Client, type UpstreamRun } from "./protocol";
@@ -84,6 +85,32 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   await storage.close();
   await rm(directory, { recursive: true, force: true });
+});
+
+test("changing the bot's named profile invalidates an existing continuation approval", async () => {
+  context.config = { ...context.config, profileId: "different-worker" };
+  await expect(assertSourceCurrent(context, source)).rejects.toThrow("configuration");
+  expect(nativeMutations).toBe(0);
+});
+
+test("a changed named profile bundle invalidates continuation even when the binding id is unchanged", async () => {
+  context.config = { ...context.config, profileId: "worker" };
+  source.plan!.selection = { ...source.plan!.selection, profileId: "worker", profileName: "Worker", thinkingOptionId: "deep" };
+  source.taskProvenance!.configDigest = executionConfigDigest(context.config, source.projectId, source.issueId!);
+  await storage.put(source);
+  context.gateway.select = async () => ({ ...source.plan!.selection, thinkingOptionId: "fast" });
+  await expect(assertSourceCurrent(context, source)).rejects.toThrow("selection changed");
+  expect(nativeMutations).toBe(0);
+});
+
+test("continuation requires observable matching thinking and feature settings", () => {
+  source.plan!.selection = { ...source.plan!.selection, profileId: "worker", profileName: "Worker", thinkingOptionId: "deep", featureValues: { sandbox: true } };
+  expect(() => assertSourceNative(source, native)).toThrow("cannot be verified");
+  native = { ...native!, thinkingOptionId: "deep", featureValues: { sandbox: true } };
+  assertSourceNative(source, native);
+  expect(native).toMatchObject({ thinkingOptionId: "deep", featureValues: { sandbox: true } });
+  expect(() => assertSourceNative(source, { ...native!, thinkingOptionId: "fast" })).toThrow("changed");
+  expect(() => assertSourceNative(source, { ...native!, featureValues: { sandbox: false } })).toThrow("changed");
 });
 
 describe("reviewed continuation handoff", () => {
@@ -198,4 +225,19 @@ test("a handed-off grant binds recorded execution limits and worktree associatio
   ]) expect(() => assertContinuationGrant({ ...source, ...change }, grant, grant.requestId)).toThrow();
   expect(nativeMutations).toBe(0);
   expect(posts).toBe(0);
+});
+
+test("an unsaved project admits a continuation while a later saved mapping invalidates provenance", async () => {
+  delete context.config.projects["7"];
+  protocol.repositories = async () => [{ id: 1, provider: "github", fullName: "acme/project", webUrl: "https://github.com/acme/project" }];
+  context.gateway.repositories = async () => [{ paseoProjectId: "p1", name: "Project", repository: directory, common: directory, remotes: ["https://github.com/acme/project"] }];
+  source = { ...source, taskProvenance: captureProvenance(context.config, protocol.actor, source.intent!, "Follow project requirements", source.taskIssue!) };
+  await storage.put(source);
+  await assertSourceCurrent(context, source);
+  const preview = await prepareContinuation(context, { key: source.key });
+  expect(preview.plan.repository).toBe(directory);
+  const handed = await submitRerun(context, { ...preview, attestContinuation: true });
+  expect({ state: handed.state, posts, nativeMutations }).toEqual({ state: "unknown", posts: 0, nativeMutations: 0 });
+  context.config.projects["7"] = projectMappingSchema.parse({ repository: directory, automatic: false });
+  await expect(assertSourceCurrent(context, source)).rejects.toBeInstanceOf(ConfigurationError);
 });

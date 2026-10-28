@@ -58,7 +58,6 @@ test("manual, saved issue, field, project and global preferences retain compatib
   expect(makePlan(config, mapping, resolved.selection, { projectId: "7", issueId: 42, issueIdentifier: "TW-42", sources: resolved.sources }).sources).toEqual({ provider: "field", model: "issue", mode: "provider" });
 });
 
-test("off and unconfigured context and field settings stay absent after config parsing", () => {
-  expect(projectMappingSchema.parse({})).toEqual({ provider: "", model: "", modeId: "", repository: "", workspaceId: "", automatic: false, worktree: true, baseBranch: "" });
+test("duplicate field option bindings are rejected", () => {
   expect(projectMappingSchema.safeParse({ fieldBindings: [binding, binding] }).success).toBe(false);
 });

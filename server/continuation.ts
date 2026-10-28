@@ -7,7 +7,7 @@ import type { PersistedTaskContext, TaskContextSnapshot } from "../shared/task-c
 import type { ExperienceContext } from "./experience";
 import type { SessionSnapshot } from "./contracts";
 import { ConfigurationError } from "./errors";
-import { executionPreferences } from "./plan";
+import { executionPreferences, matchesProfileSelection } from "./plan";
 import { knownTaskRestrictions } from "./task";
 import { resolveProject } from "./projects";
 
@@ -18,7 +18,7 @@ function canonical(value: unknown): string {
 }
 export function factDigest(value: unknown): string { return createHash("sha256").update(canonical(value)).digest("hex"); }
 export function executionConfigDigest(config: Config, projectId: string, issueId: number): string {
-  return factDigest({ serverUrl: config.serverUrl, host: [config.paseoConnectionMode, config.paseoUrl], defaults: [config.defaultProvider, config.defaultModel, config.defaultModeId], project: config.projects[projectId], issue: config.issueOverrides[String(issueId)], mcp: config.mcp, execution: { timeoutMs: config.executionTimeoutMs, leaseSafetyMs: config.leaseSafetyMs, activityPrivacy: config.activityPrivacy ?? "off" } });
+  return factDigest({ serverUrl: config.serverUrl, profileId: config.profileId, host: [config.paseoConnectionMode, config.paseoUrl], defaults: [config.defaultProvider, config.defaultModel, config.defaultModeId], project: config.projects[projectId], issue: config.issueOverrides[String(issueId)], mcp: config.mcp, execution: { timeoutMs: config.executionTimeoutMs, leaseSafetyMs: config.leaseSafetyMs, activityPrivacy: config.activityPrivacy ?? "off" } });
 }
 export function taskRequirements(issue: Issue, context?: PersistedTaskContext): string {
   return canonical({ id: issue.id, projectId: issue.projectId, identifier: issue.identifier, title: issue.title, description: issue.description ?? "", context: context ? { text: context.text, warnings: context.warnings, digest: context.digest, assets: context.assets.map(({ id, filename, mimeType, digest }) => ({ id, filename, mimeType, digest })) } : undefined });
@@ -63,7 +63,7 @@ export function sourceFactsDigest(record: SessionRecord): string {
   return factDigest({ key: record.key, serverUrl: record.serverUrl, task: record.task, intent: record.intent, provenance: record.taskProvenance, issue: record.taskIssue, context: record.taskContext, plan: record.plan, project: record.projectMapping, agentId: record.agentId, workspaceId: record.workspaceId, cwd: record.cwd, branchName: record.branchName, limits: record.limits, provider: record.provider, model: record.model, modeId: record.modeId, nativeLastUserMessageAt: record.nativeLastUserMessageAt, result: record.result, evidence: record.evidence, acceptance: record.acceptance, createdAt: record.createdAt });
 }
 export function assertSourceNative(record: SessionRecord, native: SessionSnapshot | null): asserts native is SessionSnapshot {
-  if (!native || native.id !== record.agentId || native.archived || native.active || native.error || native.pendingPermissionCount !== 0 || native.cwd !== record.cwd || native.workspaceId !== record.workspaceId || native.provider !== record.provider || native.model !== record.model || native.modeId !== record.modeId || !native.lastUserMessageAt || native.lastUserMessageAt !== record.nativeLastUserMessageAt) {
+  if (!native || native.id !== record.agentId || native.archived || native.active || native.error || native.pendingPermissionCount !== 0 || native.cwd !== record.cwd || native.workspaceId !== record.workspaceId || native.provider !== record.provider || native.model !== record.model || native.modeId !== record.modeId || !native.lastUserMessageAt || native.lastUserMessageAt !== record.nativeLastUserMessageAt || !record.plan || !matchesProfileSelection(native, record.plan.selection)) {
     throw new ConfigurationError("The reviewed native session is missing, busy, changed, archived, or its original turn cannot be verified. It was not interrupted.");
   }
 }
@@ -77,8 +77,7 @@ export async function assertSourceCurrent(context: ExperienceContext, record: Se
   const original = record.intent!.sourceRunId === record.externalId ? upstream : await context.protocol.getRun(record.intent!.sourceRunId);
   const originalMatches = original && original.issueId === record.issueId && original.projectId === record.projectId && original.username === actor.username && original.agentId === upstream?.agentId &&
     (record.intent!.source === "issue" ? original.trigger === "delegation" : original.prompt === record.intent!.request && (record.intent!.source === "comment" ? original.trigger === "mention" : original.trigger !== "delegation" && original.trigger !== "mention"));
-  const project = context.config.projects[record.projectId];
-  if (!project || record.serverUrl !== context.config.serverUrl || !actor.isAgent || actor.id !== record.taskProvenance!.actorId || !upstream || !originalMatches || upstream.trigger !== run?.trigger || upstream.executionState !== "success" || upstream.status !== "success" || upstream.attempts !== record.attempt || upstream.issueId !== record.issueId || upstream.projectId !== record.projectId || upstream.username !== actor.username || factDigest(taskRequirements(issue, record.taskContext)) !== record.taskProvenance!.requirementsDigest || executionConfigDigest(context.config, record.projectId, record.issueId!) !== record.taskProvenance!.configDigest) {
+  if (record.serverUrl !== context.config.serverUrl || !actor.isAgent || actor.id !== record.taskProvenance!.actorId || !upstream || !originalMatches || upstream.trigger !== run?.trigger || upstream.executionState !== "success" || upstream.status !== "success" || upstream.attempts !== record.attempt || upstream.issueId !== record.issueId || upstream.projectId !== record.projectId || upstream.username !== actor.username || factDigest(taskRequirements(issue, record.taskContext)) !== record.taskProvenance!.requirementsDigest || executionConfigDigest(context.config, record.projectId, record.issueId!) !== record.taskProvenance!.configDigest) {
     throw new ConfigurationError("The source actor, requirements, configuration, or authoritative outcome changed. Start a fresh session.");
   }
   const resolvedProject = await resolveProject(context.config, context.protocol, context.gateway, record.projectId);

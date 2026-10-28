@@ -5,14 +5,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { realpath } from "node:fs/promises";
 import { ConfigurationError, StorageError } from "./errors";
-import type { Config, Milestone, Selection } from "../shared/config";
+import { projectMappingSchema, type Config, type Milestone, type Selection } from "../shared/config";
 import type { AgUiEvent, Issue, Result, SessionRecord, Task } from "../shared/models";
 import type { Gateway, Journal, Protocol, Secrets } from "./contracts";
 import { AgentIdentityError, RequestError, isAuthError, isTransientError } from "./protocol";
 import { resolveProject } from "./projects";
 import type { IntegrationRuntime } from "../shared/experience";
 import type { SessionSnapshot } from "./contracts";
-import { executionPreferences, makePlan } from "./plan";
+import { executionPreferences, makePlan, matchesProfileSelection } from "./plan";
 import { assessAcceptance, nativeSystemPrompt, taskPrompt } from "./task";
 import { assertContinuationGrant, assertSourceNative, captureProvenance, contextRequirementsDigest, executionConfigDigest, factDigest, intentDigest, taskRequirements } from "./continuation";
 import type { ContinuationGrant } from "../shared/continuation";
@@ -22,13 +22,16 @@ function compatibleSession(session: SessionSnapshot, selection: Selection, previ
   const unchangedProvider = previous?.provider === selection.provider;
   const model = selection.model ? session.model === selection.model : unchangedProvider && previous?.model === "" && session.model !== null;
   const mode = selection.modeId ? session.modeId === selection.modeId : unchangedProvider && previous?.modeId === "";
-  return !session.archived && session.provider === selection.provider && model && mode;
+  const profile = previous?.profileId === selection.profileId &&
+    (!selection.profileId || factDigest(previous) === factDigest(selection)) && matchesProfileSelection(session, selection);
+  return !session.archived && session.provider === selection.provider && model && mode && profile;
 }
 
 const terminal: Partial<Record<SessionRecord["phase"], true>> = { finished: true, canceled: true, "lease-lost": true, uncertain: true };
-export function taskKey(serverUrl: string, task: Task): string {
+export function taskKey(serverUrl: string, task: Task, botId = "default"): string {
   const server = createHash("sha256").update(serverUrl.replace(/\/+$/, "")).digest("hex").slice(0, 16);
-  return task.kind === "run" ? `${server}:run:${task.run.id}:${task.run.attempts}` : `${server}:chat:${task.message.id}:${task.message.attempts ?? 1}`;
+  const scope = botId === "default" ? server : `${server}:bot:${botId}`;
+  return task.kind === "run" ? `${scope}:run:${task.run.id}:${task.run.attempts}` : `${scope}:chat:${task.message.id}:${task.message.attempts ?? 1}`;
 }
 function agentIdFor(key: string): string {
   const hash = createHash("sha256").update(`paseo-itsaplan:${key}`).digest("hex");
@@ -253,7 +256,7 @@ export class Engine {
   }
 
   private launch(task: Task, config = structuredClone(this.config), secrets = { ...this.secrets }, admissionEpoch = this.admissionEpoch): Promise<void> {
-    const key = taskKey(config.serverUrl, task);
+    const key = taskKey(config.serverUrl, task, config.botId);
     const running = this.active.get(key);
     if (running) return running.done;
     const existing = this.journal.get(key);
@@ -454,15 +457,15 @@ export class Engine {
       }
       const projectId = issue ? String(issue.projectId) : intent?.projectId ?? binding?.projectId ?? (task.kind === "chat" ? config.chatProjects[task.message.threadId] : undefined);
       if (intent && intent.projectId !== projectId) throw new ExecutionStop("Task intent belongs to a different project");
-      if (!projectId || (!record.projectMapping && !config.projects[projectId])) throw new ExecutionStop("Enable this project in plugin settings and select a project for chat threads before automatic execution");
-      if (!record.projectMapping && !config.projects[projectId]!.automatic) throw new ExecutionStop("Automatic execution is disabled for this project");
+      if (!projectId) throw new ExecutionStop("Select a project for this chat thread before automatic execution");
+      if (!record.projectMapping && config.projects[projectId]?.automatic === false) throw new ExecutionStop("Automatic execution is disabled for this project");
       if (record.projectId && record.projectId !== projectId) throw new ExecutionStop("The issue's project changed; refusing to reroute an existing execution");
       let boundRecord: SessionRecord | undefined;
       if (binding) for (const item of this.journal.records()) {
         if (item.serverUrl === record.serverUrl && item.projectId === projectId && item.agentId === binding.agentId && item.projectMapping && (!boundRecord || item.createdAt >= boundRecord.createdAt)) boundRecord = item;
       }
       const boundMapping = boundRecord?.projectMapping;
-      const project = record.projectMapping ?? (boundMapping ? { ...config.projects[projectId]!, repository: boundMapping.repository, workspaceId: boundMapping.workspaceId } : await resolveProject(config, this.protocol, this.gateway, projectId, stop.signal));
+      const project = record.projectMapping ?? (boundMapping ? { ...(config.projects[projectId] ?? projectMappingSchema.parse({})), repository: boundMapping.repository, workspaceId: boundMapping.workspaceId } : await resolveProject(config, this.protocol, this.gateway, projectId, stop.signal));
       const preferences = await executionPreferences(this.protocol, config, project, issue, {}, stop.signal);
       const selection = record.plan?.selection ?? await this.gateway.select(config, project, preferences.selection);
       if (!record.plan) await persist({ projectId, projectMapping: project, intent,
@@ -477,7 +480,6 @@ export class Engine {
         const actor = await this.protocol.identity(stop.signal);
         stop.signal.throwIfAborted();
         const currentIssue = await this.protocol.issue(issue.id, stop.signal);
-        if (!this.config.projects[projectId]) throw new ExecutionStop("The continuation project is no longer configured");
         const currentProject = await resolveProject(this.config, this.protocol, this.gateway, projectId, stop.signal);
         if (currentProject.repository !== source.projectMapping!.repository || currentProject.workspaceId !== source.projectMapping!.workspaceId) throw new ExecutionStop("The continuation repository mapping changed");
         const currentPreferences = await executionPreferences(this.protocol, this.config, currentProject, currentIssue, {}, stop.signal);
@@ -546,7 +548,7 @@ export class Engine {
           const bound = await this.gateway.inspect(binding.agentId);
           if (!bound || bound.archived) throw new ExecutionStop("Mapped Paseo session is missing or archived; refusing to lose conversation state");
           if (compatibleSession(bound, selection, boundRecord?.plan?.selection)) await persist({ agentId: binding.agentId });
-          else throw new ExecutionStop("The mapped chat session's model or mode differs from this request, or its defaults cannot be verified. Update the native session to the explicit selection or start a new It's a Plan thread; conversation state was preserved.");
+          else throw new ExecutionStop("The mapped chat session's profile, model, mode, thinking, or feature settings differ from this request or cannot be verified. Start a new It's a Plan thread; conversation state was preserved.");
         }
         const known = record.agentId !== agentIdFor(key) ? await this.gateway.inspect(record.agentId) : null;
         if (record.agentId !== agentIdFor(key) && (!known || !compatibleSession(known, selection, binding?.agentId === known.id ? boundRecord?.plan?.selection : undefined))) throw new ExecutionStop("Mapped Paseo session selection changed before reuse");
@@ -571,12 +573,12 @@ export class Engine {
         throw new ExecutionStop("Paseo session is missing or archived");
       }
       stop.signal.throwIfAborted();
-      if (record.phase === "created" && (snapshot.active || snapshot.pendingPermissionCount > 0 || snapshot.id !== record.agentId || snapshot.cwd !== record.cwd || snapshot.workspaceId !== record.workspaceId || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId)) {
+      if (record.phase === "created" && (snapshot.active || snapshot.pendingPermissionCount > 0 || snapshot.id !== record.agentId || snapshot.cwd !== record.cwd || snapshot.workspaceId !== record.workspaceId || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId || !matchesProfileSelection(snapshot, selection, resumed))) {
         sessionOwned = false;
-        throw new ExecutionStop("Native session is busy or its model/mode changed; refusing to interrupt it");
+        throw new ExecutionStop("Native session is busy or its profile settings changed or cannot be verified; start a fresh thread");
       }
       if (continuation && resumed && ["sending", "running"].includes(record.phase)) {
-        if (!record.nativeLastUserMessageAt || snapshot.lastUserMessageAt !== record.nativeLastUserMessageAt || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId || snapshot.cwd !== record.cwd || snapshot.workspaceId !== record.workspaceId) throw new ExecutionStop("The interrupted continuation's native turn cannot be verified; no prompt was replayed or session interrupted");
+        if (!record.nativeLastUserMessageAt || snapshot.lastUserMessageAt !== record.nativeLastUserMessageAt || snapshot.provider !== record.provider || snapshot.model !== record.model || snapshot.modeId !== record.modeId || snapshot.cwd !== record.cwd || snapshot.workspaceId !== record.workspaceId || !matchesProfileSelection(snapshot, selection)) throw new ExecutionStop("The interrupted continuation's native turn cannot be verified; no prompt was replayed or session interrupted");
         sessionOwned = snapshot.active;
       }
       await persist({ provider: snapshot.provider, model: snapshot.model, modeId: snapshot.modeId, pendingPermissionCount: snapshot.pendingPermissionCount });
@@ -838,7 +840,7 @@ export class Engine {
     const config = structuredClone(this.config);
     const secrets = { ...this.secrets };
     const admissionEpoch = this.admissionEpoch;
-    const key = `manual:${randomUUID()}`;
+    const key = `${config.botId === "default" ? "" : `bot:${config.botId}:`}manual:${randomUUID()}`;
     const stop = new AbortController();
     const active: Active = { stop, done: Promise.resolve(), clear() {} };
     this.active.set(key, active);
@@ -905,7 +907,7 @@ export class Engine {
     if (!permitted) permitted = this.journal.records().some((item) => item.agentId === agentId && item.projectId === String(issue.projectId) && item.cwd === session.cwd);
     if (!permitted) throw new ConfigurationError("Session is outside this project's configured repository/worktree");
     const now = Date.now();
-    const record: SessionRecord = { key: `manual:${randomUUID()}`, kind: "manual", serverUrl: this.config.serverUrl, externalId: 0, attempt: 0, issueId: issue.id, issueIdentifier: issue.identifier, projectId: String(issue.projectId), projectMapping: project, agentId, workspaceId: session.workspaceId, cwd: session.cwd, provider: session.provider, model: session.model, modeId: session.modeId, pendingPermissionCount: session.pendingPermissionCount, phase: "finished", createdAt: now, updatedAt: now, eventOffset: 0 };
+    const record: SessionRecord = { key: `${this.config.botId === "default" ? "" : `bot:${this.config.botId}:`}manual:${randomUUID()}`, kind: "manual", serverUrl: this.config.serverUrl, externalId: 0, attempt: 0, issueId: issue.id, issueIdentifier: issue.identifier, projectId: String(issue.projectId), projectMapping: project, agentId, workspaceId: session.workspaceId, cwd: session.cwd, provider: session.provider, model: session.model, modeId: session.modeId, pendingPermissionCount: session.pendingPermissionCount, phase: "finished", createdAt: now, updatedAt: now, eventOffset: 0 };
     await this.journal.put(record);
     return record;
   }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createHash } from "node:crypto";
-import { defaults, type Config, type Selection } from "../shared/config";
+import { configSchema, defaults, type Config, type Selection } from "../shared/config";
 import type { AgUiEvent, Result, Run, SessionRecord, Task } from "../shared/models";
 import type { Gateway, Journal, Protocol, SessionSnapshot } from "./contracts";
 import { Engine, issueBranchName, taskKey } from "./engine";
@@ -127,6 +127,21 @@ async function until(check: () => boolean) {
   expect(check()).toBe(true);
 }
 
+test("two bots executing the same upstream task create isolated native session identities", async () => {
+  const first = setup({ botId: "alpha" });
+  const second = setup({ botId: "beta" });
+  const secondEngine = new Engine(second.config, second.wire.api, first.coding, second.journal, {});
+  running.push(secondEngine);
+  await first.engine.dispatch(first.task);
+  await secondEngine.dispatch(second.task);
+  expect(first.journal.records()[0]).toMatchObject({ phase: "finished", result: { status: "success" } });
+  expect(second.journal.records()[0]).toMatchObject({ phase: "finished", result: { status: "success" } });
+  expect(first.coding.created.map(({ key }) => key.split(":").slice(1).join(":"))).toEqual(["bot:alpha:run:31:1", "bot:beta:run:31:1"]);
+  expect(new Set(first.coding.created.map(({ agentId }) => agentId)).size).toBe(2);
+  expect(first.coding.sent.map(({ id }) => id)).toEqual(first.coding.created.map(({ agentId }) => agentId));
+  expect(taskKey(first.config.serverUrl, first.task)).toMatch(/^[a-f0-9]{16}:run:31:1$/);
+});
+
 describe("external execution coordination", () => {
   test("routes a claimed issue, keeps heartbeats alive, reports output and persists its session without completing the issue", async () => {
     const value = setup();
@@ -150,7 +165,7 @@ describe("external execution coordination", () => {
     expect(value.coding.sent).toHaveLength(1);
     expect(value.wire.reports).toHaveLength(1);
   });
-  test("an unmapped project fails without starting or canceling an arbitrary coding session", async () => {
+  test("an unsaved project without a linked repository fails without starting or canceling an arbitrary coding session", async () => {
     const value = setup({ projects: {} });
     await value.engine.dispatch(value.task);
     expect(value.coding.created).toEqual([]);
@@ -290,10 +305,21 @@ describe("automatic repository routing", () => {
     value.coding.repositoriesList = [{ paseoProjectId: "native-project", name: "App", repository: "/registered/app", common: "/registered/app/.git", remotes: ["https://forge.test/team/app"] }];
     return value;
   }
-  test("routes an opted-in project by linked repository and persists the resolved checkout", async () => {
+  test("routes a project by linked repository and persists the resolved checkout", async () => {
     const value = matched();
     await value.engine.dispatch(value.task);
     expect(value.journal.records()[0]).toMatchObject({ phase: "finished", cwd: "/registered/app", projectMapping: { repository: "/registered/app", automatic: true } });
+    expect(value.wire.reports[0]).toMatchObject({ status: "success", attempt: 1 });
+  });
+  test.each(["unsaved", "inherited"] as const)("automatically executes an %s project with inherited defaults", async (kind) => {
+    const value = matched();
+    value.config.projects = kind === "unsaved" ? {} : configSchema.parse({ projects: { "2": {} } }).projects;
+    await value.engine.dispatch(value.task);
+    expect(value.coding.created[0]).toMatchObject({
+      project: { repository: "/registered/app", automatic: true, worktree: true },
+      selection: { provider: "omp", model: "model", modeId: "ask" },
+    });
+    expect(value.journal.records()[0]).toMatchObject({ phase: "finished", projectId: "2", projectMapping: { repository: "/registered/app", automatic: true } });
     expect(value.wire.reports[0]).toMatchObject({ status: "success", attempt: 1 });
   });
   test("independent matching clones fail before session creation", async () => {
@@ -330,7 +356,7 @@ describe("automatic repository routing", () => {
     expect(value.coding.sessions.get(preparation.agentId)?.cwd).toBe("/registered/app");
     expect(value.journal.get(key)?.result?.status).toBe("success");
   });
-  test("matching does not grant automatic execution permission", async () => {
+  test("an explicit project opt-out blocks execution even with a unique repository match", async () => {
     const value = matched();
     value.config.projects["2"]!.automatic = false;
     await value.engine.dispatch(value.task);
@@ -339,6 +365,7 @@ describe("automatic repository routing", () => {
   });
   test("follow-up chat retains its original checkout when automatic repository discovery changes", async () => {
     const value = matched();
+    value.config.projects = {};
     value.config.chatProjects = { thread: "2" };
     const chat: Task = { kind: "chat", message: { id: 20, attempts: 1, threadId: "thread", prompt: "Initial", systemPrompt: "Rules", sessionId: null } };
     await value.engine.dispatch(chat);
@@ -353,7 +380,7 @@ describe("automatic repository routing", () => {
     const value = matched();
     value.config.projects = {};
     const record = await value.engine.manual(await value.wire.api.issue(8), value.coding);
-    expect(record).toMatchObject({ phase: "running", cwd: "/registered/app", projectMapping: { repository: "/registered/app", automatic: false } });
+    expect(record).toMatchObject({ phase: "running", cwd: "/registered/app", projectMapping: { repository: "/registered/app" } });
     expect(value.coding.sessions.get(record.agentId)?.active).toBe(true);
     expect(value.wire.reports).toEqual([]);
   });
@@ -689,6 +716,45 @@ test.each(["model", "mode", "unknown-default"])("chat refuses an incompatible %s
   expect(value.coding.sent).toHaveLength(1);
   expect(value.wire.reports.at(-1)?.status).toBe("failed");
   expect(value.journal.thread("thread")!.agentId).toBe(first);
+});
+
+test.each(["binding", "thinking", "features", "unknown-thinking", "unknown-features"])("chat refuses an incompatible profile %s and preserves its original thread", async (change) => {
+  const value = setup({ profileId: "worker", chatProjects: { thread: "1" } });
+  let selection: Selection = { profileId: "worker", profileName: "Worker", provider: "omp", model: "model", modeId: "ask", thinkingOptionId: "deep", featureValues: { sandbox: true } };
+  value.coding.select = async () => selection;
+  const chat: Task = { kind: "chat", message: { id: 20, threadId: "thread", prompt: "Initial", systemPrompt: "Rules", sessionId: null } };
+  await value.engine.dispatch(chat);
+  const first = value.journal.thread("thread")!.agentId;
+  const native = value.coding.sessions.get(first)!;
+  native.thinkingOptionId = "deep";
+  native.featureValues = { sandbox: true };
+  if (change === "binding") {
+    selection = { ...selection, profileId: "different-worker" };
+    value.engine.updateConfiguration({ ...value.config, profileId: "different-worker" });
+  }
+  if (change === "thinking") native.thinkingOptionId = "fast";
+  if (change === "features") native.featureValues = { sandbox: false };
+  if (change === "unknown-thinking") delete native.thinkingOptionId;
+  if (change === "unknown-features") delete native.featureValues;
+  await value.engine.dispatch({ kind: "chat", message: { ...chat.message, id: 21, prompt: "Follow-up", sessionId: first } });
+  expect(value.coding.sent.map(({ prompt }) => prompt)).toEqual(["Initial"]);
+  expect(value.wire.reports.map(({ status }) => status)).toEqual(["success", "failed"]);
+  expect(value.wire.reports.at(-1)?.error).toContain("Start a new It's a Plan thread");
+  expect(value.journal.thread("thread")!.agentId).toBe(first);
+});
+
+test("a chat can reuse an unchanged named profile when thinking and features are observable", async () => {
+  const value = setup({ profileId: "worker", chatProjects: { thread: "1" } });
+  value.coding.select = async () => ({ profileId: "worker", profileName: "Worker", provider: "omp", model: "model", modeId: "ask", thinkingOptionId: "deep", featureValues: { sandbox: true } });
+  const chat: Task = { kind: "chat", message: { id: 20, threadId: "thread", prompt: "Initial", systemPrompt: "Rules", sessionId: null } };
+  await value.engine.dispatch(chat);
+  const first = value.journal.thread("thread")!.agentId;
+  const native = value.coding.sessions.get(first)!;
+  native.thinkingOptionId = "deep";
+  native.featureValues = { sandbox: true };
+  await value.engine.dispatch({ kind: "chat", message: { ...chat.message, id: 21, prompt: "Follow-up", sessionId: first } });
+  expect(value.coding.sent.map(({ id, prompt }) => ({ id, prompt }))).toEqual([{ id: first, prompt: "Initial" }, { id: first, prompt: "Follow-up" }]);
+  expect(value.wire.reports.map(({ status }) => status)).toEqual(["success", "success"]);
 });
 
 test("connection draining waits for the durable result outbox without canceling coding", async () => {

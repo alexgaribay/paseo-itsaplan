@@ -32,6 +32,8 @@ export interface SessionSnapshot {
   active: boolean; archived: boolean; error?: string; lastMessage?: string;
   model: string | null; modeId: string | null; pendingPermissionCount: number;
   lastUserMessageAt?: string | null;
+  thinkingOptionId?: string | null;
+  featureValues?: Record<string, unknown>;
 }
 export interface NativeAdmission {
   expected: SessionSnapshot;
@@ -41,6 +43,7 @@ export interface NativeAdmission {
 export interface Gateway {
   host(): Promise<{ id: string; label: string }>;
   catalog(cwd?: string): Promise<Provider[]>;
+  profiles?(): Promise<Selection[]>;
   repositories(signal?: AbortSignal): Promise<LocalRepository[]>;
   select(config: Config, project: ProjectMapping, override?: Partial<Selection>): Promise<Selection>;
   create(input: { key: string; agentId: string; title: string; project: ProjectMapping; selection: Selection; systemPrompt: string; config: Config; mcpToken?: string; issueId: number | null; branchName?: string }): Promise<SessionSnapshot>;

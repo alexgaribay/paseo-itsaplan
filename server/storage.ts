@@ -19,6 +19,14 @@ const tokenSchema = z.string().trim().max(8192).refine((value) => !/[\r\n\0]/.te
 const secretsSchema = z.object({ apiKey: tokenSchema.optional(), mcpToken: tokenSchema.optional(), paseoPassword: z.string().max(8192).optional(), requestApiKey: tokenSchema.optional() }).strict();
 type Stored = z.infer<typeof storedSchema>;
 
+export function validateSecrets(value: Secrets): Secrets {
+  const next = secretsSchema.parse(value);
+  for (const key of Object.keys(next) as (keyof Secrets)[]) if (!next[key]) delete next[key];
+  if (next.apiKey && next.mcpToken && next.apiKey === next.mcpToken) throw new ConfigurationError("MCP must use a different credential from the execution key");
+  if (next.requestApiKey && [next.apiKey, next.mcpToken].includes(next.requestApiKey)) throw new ConfigurationError("Reruns require a separate human API credential that is never shared with coding agents");
+  return next;
+}
+
 export function dataDirectory(): string {
   const path = process.env.ITSAPLAN_PASEO_DATA_DIR ?? join(process.env.PASEO_HOME ?? join(homedir(), ".paseo"), "plugin-data", "itsaplan");
   if (!isAbsolute(path)) throw new Error("ITSAPLAN_PASEO_DATA_DIR must be absolute");
@@ -56,7 +64,7 @@ export class PrivateStorage implements Journal {
   private credentialsSerial = Promise.resolve();
   private releaseLock: (() => Promise<void>) | undefined;
   private readonly contextOperations = new Set<Promise<unknown>>();
-  constructor(readonly directory: string) {}
+  constructor(readonly directory: string, private readonly sharedSecrets?: () => Promise<Secrets>) {}
 
   async initialize(): Promise<void> {
     if (this.closing) throw new StorageError("Private integration storage is closed");
@@ -170,9 +178,12 @@ export class PrivateStorage implements Journal {
   readContextAssets(snapshot: PersistedTaskContext): Promise<TaskContextAsset[]> {
     return this.contextOperation(() => hydrateContextAssets(this.directory, snapshot));
   }
-  secrets(): Promise<Secrets> {
-    if (this.closing) return Promise.reject(new StorageError("Private integration storage is closed"));
-    return this.readSecrets();
+  async secrets(): Promise<Secrets> {
+    if (this.closing) throw new StorageError("Private integration storage is closed");
+    const local = await this.readSecrets();
+    if (!this.sharedSecrets) return local;
+    const { apiKey: _sharedKey, ...shared } = await this.sharedSecrets();
+    return { ...shared, ...(local.apiKey ? { apiKey: local.apiKey } : {}) };
   }
   private async readSecrets(): Promise<Secrets> {
     const path = join(this.directory, "credentials.json");
@@ -184,10 +195,7 @@ export class PrivateStorage implements Journal {
   saveSecrets(patch: Secrets): Promise<void> {
     if (this.closing) return Promise.reject(new StorageError("Private integration storage is closed"));
     const operation = this.credentialsSerial.then(async () => {
-      const next = { ...await this.readSecrets(), ...secretsSchema.parse(patch) };
-      for (const key of Object.keys(next) as (keyof Secrets)[]) if (!next[key]) delete next[key];
-      if (next.apiKey && next.mcpToken && next.apiKey === next.mcpToken) throw new ConfigurationError("MCP must use a different credential from the execution key");
-      if (next.requestApiKey && [next.apiKey, next.mcpToken].includes(next.requestApiKey)) throw new ConfigurationError("Reruns require a separate human API credential that is never shared with coding agents");
+      const next = validateSecrets({ ...await this.readSecrets(), ...secretsSchema.parse(patch) });
       await atomicJson(join(this.directory, "credentials.json"), next);
     });
     this.credentialsSerial = operation.catch(() => {});

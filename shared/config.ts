@@ -11,14 +11,24 @@ export const httpUrl = z.string().trim().refine((value) => {
   } catch { return false; }
 }, "Use HTTPS, or HTTP on loopback; no credentials, query, or fragment");
 const optionalText = z.string().trim().default("");
-export const selectionSchema = z.object({ provider: optionalText, model: optionalText, modeId: optionalText });
+export const selectionSchema = z.object({
+  provider: optionalText, model: optionalText, modeId: optionalText,
+  profileId: z.string().min(1).optional(), profileName: z.string().min(1).optional(),
+  thinkingOptionId: z.string().optional(), featureValues: z.record(z.string(), z.unknown()).optional(),
+});
 export type Selection = z.infer<typeof selectionSchema>;
 export const milestoneSchema = z.enum(["turn-completed", "implementation-completed", "tests-passed", "pull-request-created", "ready-for-review", "issue-completed"]);
 export type Milestone = z.infer<typeof milestoneSchema>;
+export const botIdSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/);
+export const botSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  profileId: z.string().trim().default(""),
+  enabled: z.boolean().default(true),
+});
 export const projectMappingSchema = selectionSchema.extend({
   repository: z.string().default(""),
   workspaceId: optionalText,
-  automatic: z.boolean().default(false),
+  automatic: z.boolean().default(true),
   worktree: z.boolean().default(true),
   baseBranch: optionalText,
   statusPolicy: z.partialRecord(milestoneSchema, z.number().int().positive()).optional(),
@@ -28,6 +38,10 @@ export const projectMappingSchema = selectionSchema.extend({
 const connectionSchema = z.object({
   serverUrl: z.union([z.literal(""), httpUrl]).default("").transform((value) => value.replace(/\/+$/, "")),
   webUrl: z.union([z.literal(""), httpUrl]).default(""),
+  bots: z.record(botIdSchema, botSchema).default({ default: { name: "Default bot", profileId: "", enabled: true } }),
+  // Resolved by the host's bot registry; not a separate user-level connection.
+  profileId: optionalText,
+  botId: botIdSchema.default("default"),
   automatic: z.boolean().default(false),
   defaultProvider: optionalText,
   defaultModel: optionalText,
@@ -55,6 +69,7 @@ const connectionSchema = z.object({
     catch { return false; }
   })]).default(""),
 }).superRefine((values, context) => {
+  if (!values.bots.default) context.addIssue({ code: "custom", path: ["bots"], message: "Keep the default bot to preserve existing execution state. Disable it instead of removing it." });
   if (values.paseoConnectionMode === "manual" && !values.paseoUrl) context.addIssue({ code: "custom", path: ["paseoUrl"], message: "Enter a WebSocket URL for the manual connection override." });
 });
 export const configSchema = z.preprocess((input) => {

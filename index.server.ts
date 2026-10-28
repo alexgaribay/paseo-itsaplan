@@ -1,9 +1,10 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import { preferences } from "./shared/config";
-import { attachRpc, cancelRpc, continuationPreviewRpc, controlRpc, credentialsRpc, customFieldsRpc, detailRpc, diagnosticsRpc, hostRpc, markReviewedRpc, milestoneRpc, planRpc, projectsRpc, providersRpc, queueRpc, readinessRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, reviewRpc, searchRpc, smokePreviewRpc, startRpc, statusRpc, taskContextRpc, testConnectionRpc, testHostRpc, ticketReportPreviewRpc, ticketReportReconcileRpc, ticketReportSubmitRpc } from "./shared/rpc";
-import { PrivateStorage, dataDirectory } from "./server/storage";
-import { IntegrationService, publicSession } from "./server/service";
+import { attachRpc, cancelRpc, continuationPreviewRpc, controlRpc, credentialsRpc, customFieldsRpc, detailRpc, diagnosticsRpc, hostRpc, markReviewedRpc, milestoneRpc, planRpc, profilesRpc, projectsRpc, providersRpc, queueRpc, readinessRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, reviewRpc, searchRpc, smokePreviewRpc, startRpc, statusRpc, taskContextRpc, testConnectionRpc, testHostRpc, ticketReportPreviewRpc, ticketReportReconcileRpc, ticketReportSubmitRpc } from "./shared/rpc";
+import { dataDirectory } from "./server/storage";
+import { publicSession } from "./server/service";
+import { BotRegistry } from "./server/bots";
 import { safeError } from "./server/engine";
 import { ConfigurationError } from "./server/errors";
 import { describeHost } from "./server/host";
@@ -22,25 +23,29 @@ async function guarded<T>(operation: () => Promise<T>): Promise<T> {
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(preferences);
-  const service = new IntegrationService(new PrivateStorage(dataDirectory()), settings);
+  const bots = new BotRegistry(dataDirectory(), settings);
   const unsubscribeSettings = settings.subscribe((state) => {
-    if (state.status === "ready") return service.configure(state.values);
+    if (state.status === "ready") return bots.configure(state.values);
   });
-  const unsubscribeTurns = server.on("agent.turn_ended", (event) => guarded(() => service.turnEnded(event.agent.id, event.outcome)));
-  void service.initialize().catch(() => { service.state = "storage-error"; service.message = "Integration storage could not be loaded; existing data has been preserved"; });
-  const experience = (paseo: PaseoApi): Promise<ExperienceContext> => service.experience(paseo);
+  const unsubscribeTurns = server.on("agent.turn_ended", (event) => guarded(() => bots.turnEnded(event.agent.id, event.outcome)));
+  void bots.initialize().catch(() => {});
+  const experience = async (paseo: PaseoApi, botId?: string): Promise<ExperienceContext> => (await bots.service(botId)).experience(paseo);
 
-  server.handle(statusRpc, (_input, { paseo }) => guarded(() => service.status(service.config ? service.gatewayFor(paseo) : undefined)));
-  server.handle(credentialsRpc, (patch) => guarded(async () => {
-    await service.credentials(patch);
+  server.handle(statusRpc, ({ botId }, { paseo }) => guarded(async () => {
+    const service = await bots.service(botId);
+    return service.status(service.config ? service.gatewayFor(paseo) : undefined);
+  }));
+  server.handle(credentialsRpc, ({ botId, ...patch }) => guarded(async () => {
+    await bots.credentials(botId, patch);
     return { ok: true, message: "Credentials stored privately; existing plaintext is never returned" };
   }));
-  server.handle(testConnectionRpc, () => guarded(async () => {
-    await (await service.protocol()).test();
+  server.handle(testConnectionRpc, ({ botId }) => guarded(async () => {
+    await (await (await bots.service(botId)).protocol()).test();
     return { ok: true, message: "External-agent authentication succeeded without claiming work" };
   }));
-  server.handle(hostRpc, async (_input, { paseo }) => {
+  server.handle(hostRpc, async ({ botId }, { paseo }) => {
     try {
+      await bots.service(botId);
       const state = await settings.read();
       if (state.status !== "ready") throw new ConfigurationError("Repair the saved plugin settings first");
       const host = await describeHost({ ...state.values, paseoConnectionMode: "auto" });
@@ -49,39 +54,50 @@ export default function contribute(server: PluginServerContext) {
       return { status: "detected" as const, endpoint: host.endpoint, serverId: host.serverId };
     } catch (error) { return { status: "unavailable" as const, message: safeError(error) }; }
   });
-  server.handle(testHostRpc, () => guarded(async () => {
-    await service.checkHost();
+  server.handle(testHostRpc, ({ botId }) => guarded(async () => {
+    await (await bots.service(botId)).checkHost();
     return { ok: true, message: "Connected to the owning Paseo daemon without claiming work" };
   }));
-  server.handle(providersRpc, ({ cwd }, { paseo }) => guarded(async () => {
-    // Provider discovery uses the caller's daemon context, never another host.
-    const gateway = service.gatewayFor(paseo);
-    return gateway.catalog(cwd);
+  server.handle(providersRpc, ({ botId, cwd }, { paseo }) => guarded(async () => (await bots.service(botId)).gatewayFor(paseo).catalog(cwd)));
+  server.handle(profilesRpc, ({ botId }, { paseo }) => guarded(async () => {
+    await bots.service(botId);
+    const { config } = await paseo.config.get();
+    return (config.agentProfiles ?? []).map(({ id, name, provider, model, modeId, thinkingOptionId, featureValues }) => ({
+      id, name, provider,
+      ...(model !== undefined ? { model } : {}),
+      ...(modeId !== undefined ? { modeId } : {}),
+      ...(thinkingOptionId !== undefined ? { thinkingOptionId } : {}),
+      ...(featureValues !== undefined ? { featureValues } : {}),
+    }));
   }));
-  server.handle(projectsRpc, (_input, { paseo }) => guarded(async () => discoverProjects(await service.protocol(), service.gatewayFor(paseo), AbortSignal.timeout(30_000))));
-  server.handle(customFieldsRpc, ({ projectId, issueTypeId }) => guarded(async () => (await service.protocol()).customFields(projectId, issueTypeId)));
-  server.handle(taskContextRpc, ({ key }, { paseo }) => guarded(async () => selectedExecutionContext(await experience(paseo), key)));
-  server.handle(searchRpc, ({ projectId, query }) => guarded(async () => (await service.protocol()).search(projectId, query)));
-  server.handle(detailRpc, ({ issueId }) => guarded(async () => (await service.protocol()).issue(issueId)));
-  server.handle(startRpc, ({ issueId, provider, model, modeId }, { paseo }) => guarded(async () => {
-    const { engine, gateway, protocol } = await service.interactive(paseo);
+  server.handle(projectsRpc, ({ botId }, { paseo }) => guarded(async () => {
+    const service = await bots.service(botId);
+    return discoverProjects(await service.protocol(), service.gatewayFor(paseo), AbortSignal.timeout(30_000));
+  }));
+  server.handle(customFieldsRpc, ({ botId, projectId, issueTypeId }) => guarded(async () => (await (await bots.service(botId)).protocol()).customFields(projectId, issueTypeId)));
+  server.handle(taskContextRpc, ({ botId, key }, { paseo }) => guarded(async () => selectedExecutionContext(await experience(paseo, botId), key)));
+  server.handle(searchRpc, ({ botId, projectId, query }) => guarded(async () => (await (await bots.service(botId)).protocol()).search(projectId, query)));
+  server.handle(detailRpc, ({ botId, issueId }) => guarded(async () => (await (await bots.service(botId)).protocol()).issue(issueId)));
+  server.handle(startRpc, ({ botId, issueId, provider, model, modeId }, { paseo }) => guarded(async () => {
+    const { engine, gateway, protocol } = await (await bots.service(botId)).interactive(paseo);
     const issue = await protocol.issue(issueId);
     return publicSession(await engine.manual(issue, gateway, { ...(provider ? { provider } : {}), ...(model ? { model } : {}), ...(modeId ? { modeId } : {}) }));
   }));
-  server.handle(attachRpc, ({ issueId, agentId }, { paseo }) => guarded(async () => {
-    const { engine, gateway, protocol } = await service.interactive(paseo);
+  server.handle(attachRpc, ({ botId, issueId, agentId }, { paseo }) => guarded(async () => {
+    const { engine, gateway, protocol } = await (await bots.service(botId)).interactive(paseo);
     return publicSession(await engine.attach(await protocol.issue(issueId), agentId, gateway));
   }));
-  server.handle(cancelRpc, ({ key }, { paseo }) => guarded(async () => {
-    await service.cancel(key, paseo);
+  server.handle(cancelRpc, ({ botId, key }, { paseo }) => guarded(async () => {
+    await (await bots.service(botId)).cancel(key, paseo);
     return { ok: true, message: "Native cancellation confirmed; conversation and worktree preserved. Execution result delivery is tracked separately." };
   }));
-  server.handle(milestoneRpc, ({ key, milestone, evidence }, { paseo }) => guarded(async () => {
-    const { engine } = await service.interactive(paseo);
+  server.handle(milestoneRpc, ({ botId, key, milestone, evidence }, { paseo }) => guarded(async () => {
+    const { engine } = await (await bots.service(botId)).interactive(paseo);
     await engine.milestone(key, milestone, evidence);
     return { ok: true, message: "Evidence posted and configured issue column applied" };
   }));
-  server.handle(readinessRpc, (_input, { paseo }) => guarded(async () => {
+  server.handle(readinessRpc, ({ botId }, { paseo }) => guarded(async () => {
+    const service = await bots.service(botId);
     const config = service.configuration();
     const secrets = await service.storage.secrets();
     if (!config.serverUrl || !secrets.apiKey) {
@@ -92,30 +108,30 @@ export default function contribute(server: PluginServerContext) {
         queue: { availability: "unavailable" as const, complete: false, checkedAt, unfilteredClaims: true as const, agentUsername: null, items: [], queued: 0, running: 0, warning: "The connection is not configured. The upstream queue has not been read; it is not known to be empty." },
       };
     }
-    return readiness(await experience(paseo));
+    return readiness(await experience(paseo, botId));
   }));
-  server.handle(planRpc, (input, { paseo }) => guarded(async () => planForIssue(await experience(paseo), input)));
-  server.handle(queueRpc, (_input, { paseo }) => guarded(async () => queuePreview(await experience(paseo))));
-  server.handle(controlRpc, ({ action }) => guarded(() => service.control(action)));
-  server.handle(rerunPreviewRpc, (input, { paseo }) => guarded(async () => prepareRerun(await experience(paseo), input)));
-  server.handle(rerunSubmitRpc, (input, { paseo }) => guarded(async () => submitRerun(await experience(paseo), input)));
-  server.handle(rerunReconcileRpc, (input, { paseo }) => guarded(async () => reconcileRerun(await experience(paseo), input)));
-  server.handle(rerunDiscardRpc, (input, { paseo }) => guarded(async () => discardRerun(await experience(paseo), input)));
-  server.handle(smokePreviewRpc, (input, { paseo }) => guarded(async () => prepareSmoke(await experience(paseo), input)));
-  server.handle(continuationPreviewRpc, (input, { paseo }) => guarded(async () => prepareContinuation(await experience(paseo), input)));
-  server.handle(ticketReportPreviewRpc, (input, { paseo }) => guarded(async () => prepareTicketReport(await experience(paseo), input)));
-  server.handle(ticketReportSubmitRpc, (input, { paseo }) => guarded(async () => submitTicketReport(await experience(paseo), input)));
-  server.handle(ticketReportReconcileRpc, (input, { paseo }) => guarded(async () => reconcileTicketReport(await experience(paseo), input)));
-  server.handle(recoverHandoffRpc, (input, { paseo }) => guarded(async () => recoverHandoff(await experience(paseo), input)));
-  server.handle(reviewRpc, (input, { paseo }) => guarded(async () => reviewExecution(await experience(paseo), input)));
-  server.handle(markReviewedRpc, (input, { paseo }) => guarded(async () => markExecutionReviewed(await experience(paseo), input)));
-  server.handle(diagnosticsRpc, (_input, { paseo }) => guarded(async () => diagnostics(
-    { config: service.configuration(), storage: service.storage, runtime: service.runtime() },
-    await service.status(service.gatewayFor(paseo)),
-  )));
+  server.handle(planRpc, ({ botId, ...input }, { paseo }) => guarded(async () => planForIssue(await experience(paseo, botId), input)));
+  server.handle(queueRpc, ({ botId }, { paseo }) => guarded(async () => queuePreview(await experience(paseo, botId))));
+  server.handle(controlRpc, ({ botId, action }) => guarded(async () => (await bots.service(botId)).control(action)));
+  server.handle(rerunPreviewRpc, ({ botId, ...input }, { paseo }) => guarded(async () => prepareRerun(await experience(paseo, botId), input)));
+  server.handle(rerunSubmitRpc, ({ botId, ...input }, { paseo }) => guarded(async () => submitRerun(await experience(paseo, botId), input)));
+  server.handle(rerunReconcileRpc, ({ botId, ...input }, { paseo }) => guarded(async () => reconcileRerun(await experience(paseo, botId), input)));
+  server.handle(rerunDiscardRpc, ({ botId, ...input }, { paseo }) => guarded(async () => discardRerun(await experience(paseo, botId), input)));
+  server.handle(smokePreviewRpc, ({ botId, ...input }, { paseo }) => guarded(async () => prepareSmoke(await experience(paseo, botId), input)));
+  server.handle(continuationPreviewRpc, ({ botId, ...input }, { paseo }) => guarded(async () => prepareContinuation(await experience(paseo, botId), input)));
+  server.handle(ticketReportPreviewRpc, ({ botId, ...input }, { paseo }) => guarded(async () => prepareTicketReport(await experience(paseo, botId), input)));
+  server.handle(ticketReportSubmitRpc, ({ botId, ...input }, { paseo }) => guarded(async () => submitTicketReport(await experience(paseo, botId), input)));
+  server.handle(ticketReportReconcileRpc, ({ botId, ...input }, { paseo }) => guarded(async () => reconcileTicketReport(await experience(paseo, botId), input)));
+  server.handle(recoverHandoffRpc, ({ botId, ...input }, { paseo }) => guarded(async () => recoverHandoff(await experience(paseo, botId), input)));
+  server.handle(reviewRpc, ({ botId, ...input }, { paseo }) => guarded(async () => reviewExecution(await experience(paseo, botId), input)));
+  server.handle(markReviewedRpc, ({ botId, ...input }, { paseo }) => guarded(async () => markExecutionReviewed(await experience(paseo, botId), input)));
+  server.handle(diagnosticsRpc, ({ botId }, { paseo }) => guarded(async () => {
+    const service = await bots.service(botId);
+    return diagnostics({ config: service.configuration(), storage: service.storage, runtime: service.runtime() }, await service.status(service.gatewayFor(paseo)));
+  }));
   return async () => {
     unsubscribeSettings();
     unsubscribeTurns();
-    await service.close();
+    await bots.close();
   };
 }

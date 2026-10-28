@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { configSchema, projectMappingSchema, selectionSchema } from "../shared/config";
-import type { SessionRecord } from "../shared/models";
+import type { LinkedRepository, SessionRecord } from "../shared/models";
 import type { Gateway, SessionSnapshot } from "./contracts";
 import { diagnostics } from "./diagnostics";
+import { ConfigurationError } from "./errors";
 import { planForIssue, queuePreview, readiness, type ExperienceContext } from "./experience";
 import { resolvePreferences } from "./plan";
 import { Client, RequestError, type UpstreamRun } from "./protocol";
@@ -46,7 +47,7 @@ class PreviewClient extends Client {
   override async identity() { return { id: this.actorId, username: this.username, isAgent: !this.personal }; }
   override async agent() { return this.agentVisible ? { id: this.agentId, username: this.username, kind: "external" as const, invocationUrl: this.invocationUrl, delegationDelaySec: 0 } : null; }
   override async projects() { return [{ id: 7, key: "TW", name: "Token Watch" }, { id: 8, key: "OTHER", name: "Unconfigured" }]; }
-  override async repositories() { return []; }
+  override async repositories(): Promise<LinkedRepository[]> { return []; }
   override async issue(id: number) { return { id, projectId: this.issueProjectId, identifier: `TW-${id}`, title: "Task" }; }
   override async queue() { if (this.queueError) throw this.queueError; return { items: structuredClone(this.items), complete: this.complete }; }
   override async getRun(id: number) { return structuredClone(id === this.source.id ? this.source : this.items.find((item) => item.id === id) ?? null); }
@@ -112,11 +113,11 @@ afterEach(async () => {
 });
 
 describe("non-claiming experience reads", () => {
-  test("reports valid and disabled projects without changing journals or executing", async () => {
+  test("enables unsaved projects by default while an unresolved repository still fails closed", async () => {
     const before = await readFile(join(storage.directory, "sessions.json"), "utf8");
     const result = await readiness(context);
     expect(result.ready).toBe(true);
-    expect(result.projects.map((project) => ({ id: project.projectId, ready: project.ready, automatic: project.automatic }))).toEqual([{ id: "7", ready: true, automatic: true }, { id: "8", ready: false, automatic: false }]);
+    expect(result.projects.map((project) => ({ id: project.projectId, ready: project.ready, automatic: project.automatic }))).toEqual([{ id: "7", ready: true, automatic: true }, { id: "8", ready: false, automatic: true }]);
     expect({ nativeWrites, upstreamWrites, journal: await readFile(join(storage.directory, "sessions.json"), "utf8") }).toEqual({ nativeWrites: 0, upstreamWrites: 0, journal: before });
   });
 
@@ -129,12 +130,11 @@ describe("non-claiming experience reads", () => {
     expect((await readiness(context)).ready).toBe(false);
   });
 
-  test("exposes partial counts and unfiltered disabled project claims", async () => {
+  test("exposes partial counts and unfiltered claims for an unsaved project", async () => {
     wire.complete = false;
     wire.items = [{ ...wire.source, id: 30, projectId: "8", executionState: "queued", status: "pending" }];
     const preview = await queuePreview(context);
-    expect({ complete: preview.complete, queued: preview.queued, unfiltered: preview.unfilteredClaims, configured: preview.items[0]?.configured, automatic: preview.items[0]?.automatic }).toEqual({ complete: false, queued: 1, unfiltered: true, configured: false, automatic: false });
-    expect(preview.warning).toContain("partial");
+    expect({ complete: preview.complete, queued: preview.queued, unfiltered: preview.unfilteredClaims, configured: preview.items[0]?.configured, automatic: preview.items[0]?.automatic }).toEqual({ complete: false, queued: 1, unfiltered: true, configured: false, automatic: true });
   });
 
   test("fails polling readiness for personal credentials and push invocation", async () => {
@@ -357,7 +357,7 @@ describe("durable human rerun delivery", () => {
 test("diagnostics exports only structural execution metadata", async () => {
   const sensitive = "PROMPT_SECRET https://secret.example/private /Users/alex/private key-secret";
   const record = { ...session(), cwd: sensitive, error: sensitive, pendingEvents: [{ type: "RUN_ERROR" as const, message: sensitive }], result: { status: "failed" as const, output: sensitive, error: sensitive }, intent: { version: 1 as const, source: "task" as const, request: sensitive, projectId: "7", sourceRunId: 11 }, acceptance: { status: "failed" as const, checkedAt: 4, enforcement: "instruction-only" as const, checks: [{ id: "output" as const, status: "failed" as const, message: sensitive }] } };
-  context.config.projects["8"] = projectMappingSchema.parse({ repository: sensitive, provider: "https://secret.example", model: "/Users/alex/model" });
+  context.config.projects["8"] = projectMappingSchema.parse({ repository: sensitive, provider: "https://secret.example", model: "/Users/alex/model", automatic: false });
   const report = await diagnostics(context, { state: "ready", credentialPresent: true, mcpCredentialPresent: false, passwordPresent: false, requestCredentialPresent: true, sessions: [record] });
   const bundle = JSON.parse(report.text) as { sessions: { externalId: number; result: object; acceptance: { checks: object[] } }[]; credentials: object; configuration: { projects: object[] } };
   expect(bundle.credentials).toEqual({ execution: true, mcp: false, paseoPassword: false, humanRequest: true });
@@ -514,7 +514,7 @@ describe("issue-origin smoke and browser recovery", () => {
     expect((await submitRerun(context, preview)).state).toBe("unknown");
   });
 
-  test("requires fresh plans and saved enabled automatic execution without resuming anything", async () => {
+  test("requires fresh plans and enabled automatic execution without resuming anything", async () => {
     await emptyJournal();
     const preview = await prepareSmoke(context, { issueId: 21 });
     context.config.issueOverrides["21"] = selectionSchema.parse({ modeId: "plan" });
@@ -526,7 +526,7 @@ describe("issue-origin smoke and browser recovery", () => {
       context.runtime.paused = disabled === "paused";
       context.runtime.pendingConfiguration = disabled === "draining";
       context.runtime.claiming = disabled !== "claiming";
-      await expect(submitRerun(context, preview)).rejects.toThrow("Enable saved global and project");
+      await expect(submitRerun(context, preview)).rejects.toBeInstanceOf(ConfigurationError);
     }
     expect({ state: storage.request(preview.requestId)?.state, posts: postCount, nativeWrites, upstreamWrites }).toEqual({ state: "prepared", posts: 0, nativeWrites: 0, upstreamWrites: 0 });
   });
@@ -602,4 +602,15 @@ test("another session's idle metadata cannot authorize a new issue request", asy
   await expect(prepareSmoke(context, { issueId: 21 })).rejects.toThrow();
   expect(storage.requests()).toEqual([]);
   expect(postCount).toBe(0);
+});
+
+test("an unsaved project prepares and delivers a smoke through defaults and repository auto-resolution", async () => {
+  await storage.saveSecrets({ requestApiKey: "human-key" });
+  delete context.config.projects["7"];
+  wire.repositories = async () => [{ id: 1, provider: "github", fullName: "acme/token-watch", webUrl: "https://github.com/acme/token-watch" }];
+  context.gateway.repositories = async () => [{ paseoProjectId: "p1", name: "Token Watch", repository: directory, common: directory, remotes: ["https://github.com/acme/token-watch"] }];
+  const preview = await prepareSmoke(context, { issueId: 21 });
+  expect(preview.plan.repository).toBe(directory);
+  const delivered = await submitRerun(context, preview);
+  expect({ state: delivered.state, runId: delivered.runId, commentId: delivered.commentId, posts: postCount }).toEqual({ state: "submitted", runId: 12, commentId: 101, posts: 1 });
 });

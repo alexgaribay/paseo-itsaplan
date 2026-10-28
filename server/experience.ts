@@ -1,4 +1,4 @@
-import type { Config, Selection } from "../shared/config";
+import { projectMappingSchema, type Config, type Selection } from "../shared/config";
 import type { ExecutionPlan, IntegrationRuntime, QueuePreview, Readiness } from "../shared/experience";
 import type { Gateway, Secrets } from "./contracts";
 import { ConfigurationError } from "./errors";
@@ -30,7 +30,7 @@ export async function planForIssue(context: ExperienceContext, input: { issueId:
   return makePlan(config, project, selection, { projectId, issueId: issue.id, issueIdentifier: issue.identifier, host, sources: resolved.sources });
 }
 
-const claimWarning = "Claims are unfiltered across the agent's projects. Disabled or unmapped projects can still be claimed and fail; this preview does not change scheduling.";
+const claimWarning = "Claims are unfiltered across the agent's projects. Projects with automatic execution disabled or without a resolvable repository can still be claimed and fail; this preview does not change scheduling.";
 
 export async function queuePreview(context: ExperienceContext): Promise<QueuePreview> {
   const checkedAt = Date.now();
@@ -45,7 +45,7 @@ export async function queuePreview(context: ExperienceContext): Promise<QueuePre
       return {
         id: run.id, agentId: run.agentId, username: run.username, projectId: run.projectId, projectName: run.projectName,
         issueId: run.issueId, issueIdentifier: run.issueIdentifier, state: run.executionState, attempts: run.attempts,
-        createdAt: run.createdAt, dueAt: run.nextAttemptAt, configured: project !== undefined, automatic: project?.automatic ?? false,
+        createdAt: run.createdAt, dueAt: run.nextAttemptAt, configured: project !== undefined, automatic: project?.automatic !== false,
       };
     });
     return {
@@ -97,8 +97,7 @@ export async function readiness(context: ExperienceContext): Promise<Readiness> 
       const problems: string[] = [];
       let path: string | null = null;
       let selection: Selection | null = null;
-      if (!configured) problems.push("Configure this project's repository and execution preferences before enabling it.");
-      if (!configured?.automatic) problems.push("Automatic execution is disabled for this project. Unfiltered claims can still reach it.");
+      if (configured?.automatic === false) problems.push("Automatic execution is disabled for this project. Unfiltered claims can still reach it.");
       try {
         const mapping = await resolveProject(context.config, context.protocol, context.gateway, projectId);
         const project = { ...mapping, repository: (await repository(mapping.repository)).root };
@@ -107,14 +106,14 @@ export async function readiness(context: ExperienceContext): Promise<Readiness> 
       } catch (error) {
         problems.push(error instanceof ConfigurationError ? error.message : "Repository or provider/model/mode validation is unavailable. Check the repository mapping and execution preferences.");
       }
-      const preferences = configured ? resolvePreferences(context.config, configured).selection : null;
-      projects.push({ projectId, key: item.key, name: item.name, automatic: configured?.automatic ?? false, ready: !!configured?.automatic && selection !== null && path !== null, repository: path, provider: selection?.provider ?? preferences?.provider ?? null, model: selection?.model ?? preferences?.model ?? null, modeId: selection?.modeId ?? preferences?.modeId ?? null, problems });
+      const preferences = resolvePreferences(context.config, configured ?? projectMappingSchema.parse({})).selection;
+      projects.push({ projectId, key: item.key, name: item.name, automatic: configured?.automatic !== false, ready: configured?.automatic !== false && selection !== null && path !== null, repository: path, provider: selection?.provider ?? preferences.provider ?? null, model: selection?.model ?? preferences.model ?? null, modeId: selection?.modeId ?? preferences.modeId ?? null, problems });
     }
     for (const projectId of Object.keys(context.config.projects)) {
       if (visible.some((item) => String(item.id) === projectId)) continue;
-      projects.push({ projectId, key: projectId, name: projectId, automatic: context.config.projects[projectId]!.automatic, ready: false, repository: null, provider: null, model: null, modeId: null, problems: ["This configured project is not visible. Review project membership and agent permissions."] });
+      projects.push({ projectId, key: projectId, name: projectId, automatic: context.config.projects[projectId]!.automatic !== false, ready: false, repository: null, provider: null, model: null, modeId: null, problems: ["This configured project is not visible. Review project membership and agent permissions."] });
     }
-    add({ id: "projects", label: "Project routing", state: projects.some((project) => project.ready) ? projects.some((project) => !project.ready) ? "warning" : "pass" : "fail", message: projects.some((project) => project.ready) ? "Review each project's readiness. Claims are not filtered to enabled or mapped projects." : "No visible project is enabled with a valid repository and execution selection.", action: { kind: "projects" } });
+    add({ id: "projects", label: "Project routing", state: projects.some((project) => project.ready) ? projects.some((project) => !project.ready) ? "warning" : "pass" : "fail", message: projects.some((project) => project.ready) ? "Review each project's readiness. Claims are not filtered to enabled projects." : "No visible project is enabled with a valid repository and execution selection.", action: { kind: "projects" } });
   } catch {
     add({ id: "projects", label: "Project routing", state: "fail", message: "Projects are unavailable. Review the agent's project membership and read permissions.", action: { kind: "projects" } });
   }

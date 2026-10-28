@@ -1,7 +1,19 @@
 import type { Config, ProjectMapping, Selection } from "../shared/config";
 import type { ExecutionPlan } from "../shared/experience";
 import type { Issue } from "../shared/models";
-import type { Protocol } from "./contracts";
+import type { Protocol, SessionSnapshot } from "./contracts";
+import { isDeepStrictEqual } from "node:util";
+
+export function matchesProfileSelection(session: Pick<SessionSnapshot, "thinkingOptionId" | "featureValues">, selection: Selection, requireVerified = true): boolean {
+  if (selection.thinkingOptionId !== undefined && (session.thinkingOptionId !== undefined || requireVerified) && session.thinkingOptionId !== selection.thinkingOptionId) return false;
+  if (selection.featureValues !== undefined) {
+    for (const [id, value] of Object.entries(selection.featureValues)) {
+      if ((!session.featureValues || !Object.hasOwn(session.featureValues, id)) && !requireVerified) continue;
+      if (!session.featureValues || !Object.hasOwn(session.featureValues, id) || !isDeepStrictEqual(session.featureValues[id], value)) return false;
+    }
+  }
+  return true;
+}
 
 type Source = ExecutionPlan["sources"]["provider"];
 type PreferenceLayer = { source: Source; value: Partial<Selection> };
@@ -29,6 +41,7 @@ export function resolvePreferences(config: Config, project: ProjectMapping, over
   ]);
 }
 export async function executionPreferences(protocol: Pick<Protocol, "issueSelection">, config: Config, project: ProjectMapping, issue?: Issue, explicit: Partial<Selection> = {}, signal?: AbortSignal): Promise<{ selection: Selection; sources: ExecutionPlan["sources"] }> {
+  if (config.profileId) return { selection: { provider: "", model: "", modeId: "" }, sources: { provider: "provider", model: "provider", mode: "provider" } };
   const field = issue && project.fieldBindings?.length ? await protocol.issueSelection(issue, project, signal) : {};
   return preferences([
     { source: "manual", value: explicit },
@@ -39,7 +52,7 @@ export async function executionPreferences(protocol: Pick<Protocol, "issueSelect
   ]);
 }
 export function makePlan(config: Config, project: ProjectMapping, selection: Selection, input: { projectId: string; issueId: number | null; issueIdentifier: string | null; host?: { id: string; label: string }; override?: Partial<Selection>; overrideSource?: "manual" | "issue"; sources?: ExecutionPlan["sources"] }): ExecutionPlan {
-  const sources = input.sources ?? resolvePreferences(config, project, input.override, input.overrideSource).sources;
+  const sources = selection.profileId ? { provider: "provider" as const, model: "provider" as const, mode: "provider" as const } : input.sources ?? resolvePreferences(config, project, input.override, input.overrideSource).sources;
   return {
     issueId: input.issueId, issueIdentifier: input.issueIdentifier, projectId: input.projectId,
     hostId: input.host?.id ?? null, hostLabel: input.host?.label ?? null,
@@ -47,6 +60,7 @@ export function makePlan(config: Config, project: ProjectMapping, selection: Sel
     worktree: project.worktree, baseBranch: project.baseBranch, defaultModelUnresolved: !selection.model,
     noToolsEnforcement: "instruction-only",
     warnings: [
+      ...(selection.profileId ? [`Named Paseo profile "${selection.profileName ?? selection.profileId}" (${selection.profileId}) supplies the complete execution configuration. Shared provider, model, mode, issue, and manual overrides are ignored.`] : []),
       ...(!selection.model ? ["Paseo resolves the model when the session is created. A provider default is not a pinned model."] : []),
       ...(!project.worktree ? ["This execution uses the configured checkout without an isolated worktree."] : []),
     ],

@@ -41,13 +41,11 @@ async function scopeFor(context: ExperienceContext, source: RequestSource): Prom
     if (!agent || agent.kind !== "external" || agent.username !== actor.username || agent.invocationUrl) throw new ConfigurationError("The polling external agent identity is unavailable or does not match this connection.");
     const issue = await context.protocol.issue(source.issueId);
     const projectId = String(issue.projectId);
-    if (!context.config.projects[projectId]) throw new ConfigurationError("Configure this project's execution preferences before testing delegation.");
     return { sourceKey: issueKey(context, issue.id), source: { kind: "issue", agentId: agent.id, actorId: actor.id, username: actor.username }, issueId: issue.id, projectId, agentId: agent.id, actor: identity };
   }
   const record = context.storage.get(source.key);
   if (!record || record.kind !== "run" || !record.issueId) throw new ConfigurationError("Rerun requires a recorded issue run.");
   if (record.serverUrl !== context.config.serverUrl) throw new ConfigurationError("This run belongs to a different It's a Plan connection.");
-  if (!context.config.projects[record.projectId]) throw new ConfigurationError("Configure the source project's execution preferences before rerunning.");
   const run = await context.protocol.getRun(record.externalId);
   if (!run || run.issueId !== record.issueId || run.projectId !== record.projectId || run.username !== actor.username) throw new ConfigurationError("The authoritative source run is unavailable or belongs to another agent, issue, or project.");
   const issue = await context.protocol.issue(record.issueId);
@@ -103,7 +101,7 @@ async function deliveryActor(context: ExperienceContext, request: RerunRequest):
 }
 
 function assertEnabled(context: ExperienceContext, scope: RequestScope): void {
-  if (!context.config.automatic || !context.config.projects[scope.projectId]?.automatic || context.runtime.paused || context.runtime.pendingConfiguration || !context.runtime.claiming || context.storage.paused()) throw new ConfigurationError("Enable saved global and project automatic execution and resume claiming before delivering this request. Execution must not be paused or draining.");
+  if (!context.config.automatic || context.config.projects[scope.projectId]?.automatic === false || context.runtime.paused || context.runtime.pendingConfiguration || !context.runtime.claiming || context.storage.paused()) throw new ConfigurationError("Enable global and project automatic execution and resume claiming before delivering this request. Execution must not be paused or draining.");
 }
 
 function matches(request: RerunRequest, scope: RequestScope, run: UpstreamRun): boolean {
@@ -163,8 +161,8 @@ function prepare(context: ExperienceContext, source: RequestSource, operation: R
     const request: RerunRequest = { id, sourceKey: scope.sourceKey, source: scope.source, executionActorId: scope.actor.id, requestActorId, serverUrl: context.config.serverUrl, issueId: scope.issueId, projectId: scope.projectId, operation, state: "prepared", createdAt: existing?.createdAt ?? now, updatedAt: now, commentId: null, runId: null, body, planDigest, delivery, ...(reviewedScope ? { continuationScope: reviewedScope } : {}) };
     context.assertCurrent();
     await context.storage.putRequest(request);
-    const disabled = !context.config.automatic || !context.config.projects[scope.projectId]?.automatic || context.runtime.paused || context.runtime.pendingConfiguration || !context.runtime.claiming || context.storage.paused();
-    return { requestId: id, sourceKey: scope.sourceKey, operation, plan, planDigest, delivery, ...(continuationReview ? { continuationReview } : {}), warnings: [...(operation === "smoke" ? ["No-tools is instruction-only, not an enforced tool sandbox."] : []), ...(disabled ? ["Delivery is blocked until saved global and project automatic execution are enabled and claiming is resumed without a pending connection change."] : [])] };
+    const disabled = !context.config.automatic || context.config.projects[scope.projectId]?.automatic === false || context.runtime.paused || context.runtime.pendingConfiguration || !context.runtime.claiming || context.storage.paused();
+    return { requestId: id, sourceKey: scope.sourceKey, operation, plan, planDigest, delivery, ...(continuationReview ? { continuationReview } : {}), warnings: [...(operation === "smoke" ? ["No-tools is instruction-only, not an enforced tool sandbox."] : []), ...(disabled ? ["Delivery is blocked until global and project automatic execution are enabled and claiming is resumed without a pending connection change."] : [])] };
   });
 }
 

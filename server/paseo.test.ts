@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { createPaseoApi, type OwnedSubscription, type PaseoApi, type PaseoAgent, type PaseoAgentCreateOptions, type PaseoAgentSendOptions, type PaseoWorkspace, type PaseoWorkspaceHandle, type PaseoWorkspaceAgentCreateOptions, type PaseoWorkspaceCreateOptions, type PaseoAgentListResult, type PaseoAgentListOptions } from "@getpaseo/client";
 import { DaemonClient, type FetchAgentTimelineOptions, type FetchAgentTimelinePayload, type WaitForFinishResult } from "@getpaseo/client/internal/daemon-client";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { MutableDaemonConfigSchema, type AgentProfile } from "@getpaseo/protocol/messages";
 import { defaults, projectMappingSchema } from "../shared/config";
 import type { Config, ProjectMapping } from "../shared/config";
 import type { AgUiEvent } from "../shared/models";
@@ -118,6 +119,75 @@ function fixture(existing = true): GatewayFixture {
   };
   return { client, api, state, gateway, config, project, input, emit, listeners };
 }
+
+function profileConfig(api: PaseoApi, profiles: AgentProfile[]) {
+  api.config.get = mock(async () => ({
+    requestId: "profiles",
+    config: MutableDaemonConfigSchema.parse({
+      mcp: { injectIntoAgents: false }, providers: { alpha: { apiKey: "do-not-expose" } },
+      agentProfiles: profiles,
+    }),
+  }));
+}
+
+describe("named local Paseo profiles", () => {
+  test("uses the entire named bundle instead of shared or request overrides and exposes only safe profile data", async () => {
+    const { gateway, api, config, project } = fixture();
+    profileConfig(api, [{ id: "worker", name: "Careful worker", provider: "alpha", model: "a-default", modeId: "review", thinkingOptionId: "deep", featureValues: { sandbox: true }, notes: "Private profile notes" }]);
+    const selected = await gateway.select({ ...config, profileId: "worker", defaultProvider: "beta" }, { ...project, model: "a-project" }, { provider: "beta", model: "b-default", modeId: "plan" });
+    expect(selected).toEqual({ profileId: "worker", profileName: "Careful worker", provider: "alpha", model: "a-default", modeId: "review", thinkingOptionId: "deep", featureValues: { sandbox: true } });
+    expect(await gateway.profiles()).toEqual([{ profileId: "worker", profileName: "Careful worker", provider: "alpha", model: "a-default", modeId: "review", thinkingOptionId: "deep", featureValues: { sandbox: true } }]);
+  });
+
+  test("rejects a missing or invalid profile without falling back to legacy defaults", async () => {
+    const { gateway, api, config, project } = fixture();
+    profileConfig(api, []);
+    await expect(gateway.select({ ...config, profileId: "deleted" }, project)).rejects.toThrow("missing or was deleted");
+    profileConfig(api, [{ id: "broken", name: "Broken profile", provider: "alpha/a-default" }]);
+    await expect(gateway.select({ ...config, profileId: "broken" }, project)).rejects.toThrow("profile configuration is invalid");
+    profileConfig(api, [{ id: "worker", name: "Worker", provider: "alpha" }]);
+    expect(await gateway.select({ ...config, profileId: "worker" }, project)).toEqual({ profileId: "worker", profileName: "Worker", provider: "alpha", model: "", modeId: "" });
+  });
+
+  test("creates the captured explicit-model bundle even when the profile or bot binding has changed", async () => {
+    const { gateway, api, config, project, state, input } = fixture(false);
+    profileConfig(api, [{ id: "worker", name: "Worker", provider: "alpha", model: "a-default", modeId: "review", thinkingOptionId: "deep", featureValues: { sandbox: true } }]);
+    const runtime = { ...config, profileId: "worker" };
+    const selection = await gateway.select(runtime, project);
+    profileConfig(api, [{ id: "worker", name: "Changed worker", provider: "beta", model: "b-default", modeId: "plan" }]);
+    expect(await gateway.create({ ...input, config: { ...runtime, profileId: "replacement" }, selection })).toMatchObject({ provider: "alpha", model: "a-default", modeId: "review" });
+    expect(state.created[0]?.config).toMatchObject({ provider: "alpha/a-default", modeId: "review", thinkingOptionId: "deep", featureValues: { sandbox: true } });
+  });
+
+  test("passes captured thinking and feature settings through provider-default creation", async () => {
+    const { api, config, project, state, input } = fixture(false);
+    profileConfig(api, [{ id: "worker", name: "Default-model worker", provider: "alpha", thinkingOptionId: "deep", featureValues: { sandbox: false } }]);
+    let created: unknown;
+    const gateway = new PaseoGateway(api, async () => {}, undefined, async (options) => {
+      created = options.config;
+      state.exists = true;
+      state.agent = { ...state.agent, labels: options.labels ?? {}, model: "daemon-selected-model" };
+      return state.agent;
+    });
+    const runtime = { ...config, profileId: "worker" };
+    const selection = await gateway.select(runtime, project);
+    profileConfig(api, []);
+    expect(await gateway.create({ ...input, config: runtime, selection })).toMatchObject({ provider: "alpha", model: "daemon-selected-model" });
+    expect(created).toMatchObject({ provider: "alpha", thinkingOptionId: "deep", featureValues: { sandbox: false } });
+  });
+
+  test("does not reuse an idempotent native session with unverified or changed profile settings", async () => {
+    const { gateway, state, input } = fixture();
+    const selection = { ...input.selection, profileId: "worker", profileName: "Worker", thinkingOptionId: "deep", featureValues: { sandbox: true } };
+    const bound = { ...input, config: { ...input.config, profileId: "worker" }, selection };
+    await expect(gateway.create(bound)).rejects.toThrow("cannot be verified");
+    state.agent.thinkingOptionId = "deep";
+    state.agent.features = [{ id: "sandbox", type: "toggle", label: "Sandbox", value: true }];
+    expect(await gateway.create(bound)).toMatchObject({ thinkingOptionId: "deep", featureValues: { sandbox: true } });
+    state.agent.features[0]!.value = false;
+    await expect(gateway.create(bound)).rejects.toThrow("Start a fresh thread");
+  });
+});
 
 describe("provider selection", () => {
   test("resolves provider, model, and mode independently in precedence order", async () => {
@@ -1115,13 +1185,15 @@ test("a mismatched wait does not release another turn's established observer", a
 });
 
 describe("native prompt admission", () => {
-  test.each(["provider", "model", "mode", "repository", "workspace", "history", "active", "archived"])("rejects %s changes without acquiring cancellation ownership", async (change) => {
+  test.each(["provider", "model", "mode", "thinking", "features", "repository", "workspace", "history", "active", "archived"])("rejects %s changes without acquiring cancellation ownership", async (change) => {
     const value = fixture();
     const expected = (await value.gateway.inspect("agent-1", { includeHistory: false }))!;
     let admitted = 0;
     if (change === "provider") value.state.agent.provider = "beta";
     if (change === "model") value.state.agent.model = "changed";
     if (change === "mode") value.state.agent.currentModeId = "plan";
+    if (change === "thinking") value.state.agent.thinkingOptionId = "deep";
+    if (change === "features") value.state.agent.features = [{ id: "sandbox", type: "toggle", label: "Sandbox", value: true }];
     if (change === "repository") value.state.agent.cwd = "/changed/repository";
     if (change === "workspace") value.state.agent.workspaceId = "changed-workspace";
     if (change === "history") value.state.agent.lastUserMessageAt = "2026-10-25T12:00:00Z";

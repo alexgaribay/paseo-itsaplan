@@ -32,11 +32,21 @@ export class IntegrationService {
   private draining: Promise<void> | undefined;
   private controls: Promise<void> = Promise.resolve();
   private readonly interactiveEngines = new Set<Engine>();
-  constructor(readonly storage: PrivateStorage, private readonly settings: PluginSettings<typeof configSchema>, private readonly connect = connectGateway) {
+  constructor(
+    readonly storage: PrivateStorage,
+    private readonly settings: PluginSettings<typeof configSchema>,
+    private readonly connect = connectGateway,
+    private readonly authorize?: (config: Config, protocol: Client, signal: AbortSignal) => Promise<void>,
+  ) {
     this.initialized = storage.initialize();
+    void this.initialized.catch(() => {
+      this.state = "storage-error";
+      this.message = "Private integration state is unreadable; preserved for recovery";
+    });
   }
-  async initialize(): Promise<void> {
+  async initialize(config?: Config): Promise<void> {
     await this.initialized;
+    if (config) { await this.configure(config); return; }
     const state = await this.settings.read();
     if (state.status !== "ready") { this.state = "configuration-error"; this.message = "Plugin settings are invalid; repair or reset the saved document"; return; }
     await this.configure(state.values);
@@ -101,6 +111,7 @@ export class IntegrationService {
       const protocol = new Client({ url: snapshot.serverUrl, apiKey: secrets.apiKey });
       try {
         await protocol.test(signal);
+        await this.authorize?.(snapshot, protocol, signal);
         const gateway = await this.connect(snapshot, secrets);
         if (signal.aborted || epoch !== this.epoch) { await gateway.close(); return; }
         this.gateway = gateway;
@@ -180,6 +191,8 @@ export class IntegrationService {
     if (!secrets.apiKey) throw new ConfigurationError("Configure an external-agent API key first");
     const captured = Promise.resolve(Object.freeze(secrets));
     const protocol = new Client({ url: config.serverUrl, apiKey: secrets.apiKey, signal: AbortSignal.any([this.bootstrap.signal, this.lifetime.signal]) });
+    await this.authorize?.(config, protocol, AbortSignal.any([this.bootstrap.signal, this.lifetime.signal]));
+    assertCurrent();
     return {
       config, protocol, gateway: this.gatewayFor(paseo, config, secrets), storage: this.storage, runtime: this.runtime(),
       credentials: () => { assertCurrent(); return captured; }, assertCurrent,
@@ -192,7 +205,9 @@ export class IntegrationService {
     const secrets = await this.storage.secrets();
     if (epoch !== this.epoch || config.serverUrl !== this.config?.serverUrl) throw new ConfigurationError("Connection settings changed while preparing the request; try again");
     if (!secrets.apiKey) throw new ConfigurationError("Configure an external-agent API key first");
-    return new Client({ url: config.serverUrl, apiKey: secrets.apiKey, signal: this.lifetime.signal });
+    const protocol = new Client({ url: config.serverUrl, apiKey: secrets.apiKey, signal: this.lifetime.signal });
+    await this.authorize?.(config, protocol, this.lifetime.signal);
+    return protocol;
   }
   async checkHost(): Promise<void> {
     await this.initialized;
