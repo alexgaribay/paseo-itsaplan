@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { openExternalUrl, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { Modal, SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { cancelRpc, controlRpc, milestoneRpc, rerunDiscardRpc, rerunReconcileRpc, statusRpc } from "../shared/rpc";
 import { milestoneSchema, type Milestone } from "../shared/config";

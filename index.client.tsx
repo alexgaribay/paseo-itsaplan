@@ -10,7 +10,7 @@ function ActivityItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
 
 export default function contribute(client: PluginClientContext) {
   const Executions = (props: PluginScreenProps) => <ExecutionsScreen {...props} openScreen={(input) => client.openScreen(input)} openSettings={() => client.openSettings("connection")} />;
-  const Settings = (props: PluginSurfaceProps) => <SettingsScreen {...props} openExecutions={() => client.openScreen({ screenId: activityScreenId })} />;
+  const Settings = (props: PluginSurfaceProps) => <SettingsScreen {...props} openExecutions={(botId) => client.openScreen({ screenId: activityScreenId, params: { botId } })} />;
   const cleanup = [
     client.addSettingsScreen({ id: "connection", title: "It's a Plan", icon: "ListTodo", Component: Settings }),
     client.addScreen({ id: activityScreenId, title: executionScreenTitle, Component: Executions }),

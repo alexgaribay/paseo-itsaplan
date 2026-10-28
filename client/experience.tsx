@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { SettingsAction, SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import type { ExecutionPlan, QueuePreview, Readiness } from "../shared/experience";
 import { queueRpc, readinessRpc } from "../shared/rpc";
@@ -11,6 +12,9 @@ export type ReadinessAction = NonNullable<Readiness["checks"][number]["action"]>
 export function ExecutionPlanDetails({ plan }: { plan: ExecutionPlan }) {
   return <SettingsSection title="Execution plan" info={`This is the resolved saved configuration, not proof that a session has started. Unpinned provider defaults are resolved at native session creation. No-tools is instruction-only, not a tool sandbox.${plan.defaultModelUnresolved ? " The default model is unpinned and unresolved." : ""}${plan.warnings.length ? ` ${plan.warnings.join(" ")}` : ""}`}>
     <SettingsCard>
+      {plan.selection.profileId && <SettingsRow label="Paseo profile" hint={`${plan.selection.profileName || plan.selection.profileId} · ${plan.selection.profileId}`} />}
+      {plan.selection.thinkingOptionId && <SettingsRow label="Thinking option" hint={plan.selection.thinkingOptionId} />}
+      {plan.selection.featureValues && Object.keys(plan.selection.featureValues).length > 0 && <SettingsRow label="Profile features" hint={JSON.stringify(plan.selection.featureValues)} />}
       <SettingsRow label="Provider" hint={`${plan.selection.provider || "Unresolved"} · ${plan.sources.provider}`} />
       <SettingsRow label="Model" hint={`${plan.selection.model || "Provider default, unresolved"} · ${plan.sources.model}`} />
       <SettingsRow label="Mode" hint={`${plan.selection.modeId || "Provider default, unresolved"} · ${plan.sources.mode}`} />
@@ -23,11 +27,11 @@ export function ExecutionPlanDetails({ plan }: { plan: ExecutionPlan }) {
 }
 
 function QueueDetails({ queue, theme }: { queue: QueuePreview } & Pick<PluginSurfaceProps, "theme">) {
-  return <SettingsSection title="Upstream queue" info="Claims are global and unfiltered. Disabling or leaving a project unmapped does not prevent its work from being claimed and failing. This read-only preview does not claim work.">
+  return <SettingsSection title="Upstream queue" info="Claims are global and unfiltered. Projects without saved overrides run with defaults, and an explicit automatic-off does not exclude a project from claims. This read-only preview does not claim work.">
     <SettingsCard>
       <SettingsRow label={queue.availability === "unavailable" ? "Queue unavailable" : queue.complete ? "Complete queue snapshot" : "Partial queue snapshot"} hint={`Checked ${new Date(queue.checkedAt).toLocaleString()} · ${queue.agentUsername ? `@${queue.agentUsername}` : "Agent identity unknown"}`} />
       {queue.availability === "available" && <SettingsRow label={`${queue.queued} queued · ${queue.running} running`} hint={queue.complete ? "Counts reflect this snapshot, not a reservation." : "Only the returned page is counted. More work may exist."} />}
-      {queue.items.map((item) => <SettingsRow key={item.id} label={`${item.issueIdentifier || `Run ${item.id}`} · ${item.projectName}`} hint={`${item.state} · attempt ${item.attempts} · due ${item.dueAt}${!item.configured ? " · UNMAPPED" : !item.automatic ? " · AUTOMATIC DISABLED" : ""}`} />)}
+      {queue.items.map((item) => <SettingsRow key={item.id} label={`${item.issueIdentifier || `Run ${item.id}`} · ${item.projectName}`} hint={`${item.state} · attempt ${item.attempts} · due ${item.dueAt}${!item.automatic ? " · AUTOMATIC DISABLED (EXPLICIT)" : !item.configured ? " · NO SAVED OVERRIDES" : ""}`} />)}
     </SettingsCard>
     <Warning message={queue.warning} />
     <Feedback theme={theme} message={queue.availability === "unavailable" ? "An unavailable queue is not an empty queue or proof of readiness." : !queue.complete ? "Partial results cannot establish that no blocked projects are waiting." : !queue.items.length ? "No work returned in this snapshot." : undefined} />
@@ -48,7 +52,7 @@ export function ReadinessPanel({ onNavigate, onResult, onTestDelegation, draftDi
       <SettingsCard>
         <SettingsAction label={result ? result.ready ? warnings ? "Ready with warnings" : "Last check passed" : "Setup needs attention" : "Readiness"} hint={result ? `Checked ${new Date(result.checkedAt).toLocaleString()}. A snapshot is not a scheduling guarantee.` : "Check the connection and every visible project."} actionLabel={action.pending ? "Checking…" : "Check readiness"} disabled={action.pending} onPress={run} />
         {result && <NavigationRow theme={props.theme} label="Checklist" onPress={() => setDetail("readiness")} />}
-        <SettingsAction label="Queue preview" hint="Global claims are unfiltered. Disabled and unmapped projects can still be claimed and fail. This preview does not claim work." actionLabel="Preview queue" disabled={action.pending} onPress={() => { void action.run(async () => { setQueue(await getQueue({})); setDetail("queue"); }); }} />
+        <SettingsAction label="Queue preview" hint="Global claims are unfiltered. Projects without overrides are enabled by default, and an explicit automatic-off does not exclude work from claims. This preview does not claim work." actionLabel="Preview queue" disabled={action.pending} onPress={() => { void action.run(async () => { setQueue(await getQueue({})); setDetail("queue"); }); }} />
         {onTestDelegation && <SettingsAction label="Test delegation" hint={draftDirty ? "Save or discard settings changes before testing. Only saved settings are used." : "Review the saved plan before an explicit upstream smoke request. No prior session is needed."} actionLabel="Set up test" disabled={action.pending || draftDirty} onPress={onTestDelegation} />}
       </SettingsCard>
       <Feedback theme={props.theme} error={action.error} />

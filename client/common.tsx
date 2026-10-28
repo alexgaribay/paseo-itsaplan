@@ -71,8 +71,6 @@ export function configurationError(values: Config): string | undefined {
   if (!validation.success) return validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n");
   const missingPath = Object.entries(values.projects).find(([, mapping]) => mapping.repository && !mapping.repository.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(mapping.repository));
   if (missingPath) return `Project ${missingPath[0]} needs an absolute repository path.`;
-  const orphanThread = Object.entries(values.chatProjects).find(([, project]) => !values.projects[project]);
-  if (orphanThread) return `Chat thread ${orphanThread[0]} needs a mapped project before saving.`;
 }
 
 function options(items: { id: string; name?: string }[], current: string, inherit: string) {

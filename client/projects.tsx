@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePaseo, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { usePaseo, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { Icon, Modal, SettingsAction, SettingsCard, SettingsInput, SettingsSection, SettingsSelect, SettingsSwitch, type SettingsInputHandle } from "@getpaseo/plugin/client/ui";
 import { projectMappingSchema, type Config, type ProjectMapping, type Selection } from "../shared/config";
 import type { Readiness } from "../shared/experience";
@@ -13,7 +14,7 @@ type ProjectRow = { id: string; title: string };
 
 function savedReadinessHint(readiness?: Readiness["projects"][number]): string {
   if (!readiness) return "Last saved readiness not checked. Save changes and run readiness.";
-  const state = !readiness.automatic ? "Last saved automatic execution disabled." : readiness.ready ? "Last saved project checks passed." : "Last saved project checks blocked.";
+  const state = !readiness.automatic ? "Last saved automatic execution explicitly disabled." : readiness.ready ? "Last saved project checks passed." : "Last saved project checks blocked.";
   return [state, ...readiness.problems].join(" ");
 }
 
@@ -49,10 +50,10 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
   options.push({ value: "__manual__", label: "Enter workspace ID…" });
   const validation = projectMappingSchema.safeParse(mapping);
   const absolute = !mapping.repository || mapping.repository.startsWith("/") || /^[A-Za-z]:[\\/]/.test(mapping.repository);
-  const error = !absolute ? "Enter an absolute Git repository path." : mapping.automatic && !mapping.repository && !matchedPath ? "Choose a repository override before enabling automatic execution." : manualWorkspace && !mapping.workspaceId ? "Enter a workspace ID or choose No workspace override." : !validation.success ? validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n") : undefined;
+  const error = !absolute ? "Enter an absolute Git repository path." : manualWorkspace && !mapping.workspaceId ? "Enter a workspace ID or choose No workspace override." : !validation.success ? validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n") : undefined;
   return <Modal title={title} icon={<Icon name="FolderGit2" size={18} color={props.theme.colors.foreground} />} open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Modal.Content>
-      <SettingsSection title="Repository" info="Linked repositories are matched to registered Git projects on this host. Leave the override blank to use a unique match. A workspace selection sets an explicit override." trailing={<RefreshButton theme={props.theme} label="Refresh workspaces" disabled={disabled || workspaces.loading} onPress={workspaces.refresh} />}>
+      <SettingsSection title="Repository" info="Linked repositories are matched to registered Git projects on this host. Leave the override blank to use a unique match. A workspace selection sets an explicit override. Overrides can be saved without a currently resolvable repository; readiness and execution fail closed until one resolves." trailing={<RefreshButton theme={props.theme} label="Refresh workspaces" disabled={disabled || workspaces.loading} onPress={workspaces.refresh} />}>
         <SettingsCard>
           <SettingsSelect label="Workspace" value={manualWorkspace ? "__manual__" : mapping.workspaceId} options={options} disabled={disabled} onValueChange={(workspaceId) => {
             if (workspaceId === "__manual__") { setManualWorkspace(true); return; }
@@ -64,7 +65,7 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
           {manualWorkspace && <SettingsInput label="Workspace ID" initialValue={mapping.workspaceId} disabled={disabled} onChangeText={(workspaceId) => set({ workspaceId: workspaceId.trim() })} />}
           {match?.status === "ambiguous" && <SettingsSelect label="Matching checkout" value={mapping.repository} options={[{ value: "", label: "Choose a checkout" }, ...match.candidates.map((candidate) => ({ value: candidate.repository, label: `${candidate.name} · ${candidate.repository}` })), ...(mapping.repository && !match.candidates.some((candidate) => candidate.repository === mapping.repository) ? [{ value: mapping.repository, label: "Custom override" }] : [])]} disabled={disabled} onValueChange={(repository) => { repositoryInput.current?.replaceText(repository); setManualWorkspace(false); setDiscoveryCwd(repository); set({ repository, workspaceId: "" }); }} />}
           <SettingsInput ref={repositoryInput} label="Repository override" placeholder={matchedPath || "Match linked repository"} initialValue={mapping.repository} disabled={disabled} onChangeText={(repository) => set({ repository })} />
-          <SettingsSwitch label="Automatic execution" hint="Requires global automatic delegation. Turning this off does not exclude the project from global claims." value={mapping.automatic} disabled={disabled} onValueChange={(automatic) => set({ automatic })} />
+          <SettingsSwitch label="Automatic execution" hint="On by default. Requires global automatic delegation. Turning this off is the explicit opt-out and does not exclude the project from global claims." value={mapping.automatic} disabled={disabled} onValueChange={(automatic) => set({ automatic })} />
           <SettingsSwitch label="Isolated worktree" value={mapping.worktree} disabled={disabled} onValueChange={(worktree) => set({ worktree })} />
           {mapping.worktree && <SettingsInput label="Base branch" placeholder="Repository default" initialValue={mapping.baseBranch} disabled={disabled} onChangeText={(baseBranch) => set({ baseBranch: baseBranch.trim() })} />}
         </SettingsCard>
@@ -82,7 +83,7 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
       <ContextSettings {...props} projectId={projectId} mapping={mapping} onChange={set} providers={catalog.data || []} disabled={disabled} onValidationChange={onFieldValidation} />
       <SettingsCard>
         <SettingsAction label="Project settings" hint="Updates the settings draft." actionLabel="Apply" disabled={disabled || !!error || !!fieldError} onPress={() => { if (!error && !fieldError) onApply(mapping); }} />
-        {initial && <SettingsAction label="Project configuration" hint="Repository files, sessions, and worktrees are kept." actionLabel="Remove" disabled={disabled} onPress={onRemove} />}
+        {initial && <SettingsAction label="Project configuration" hint="Repository files, sessions, and worktrees are kept. Saved overrides are deleted and settings return to defaults, which re-enable automatic execution." actionLabel="Remove" disabled={disabled} onPress={onRemove} />}
       </SettingsCard>
       <Feedback theme={props.theme} error={error || fieldError} />
     </Modal.Content>
@@ -105,7 +106,7 @@ function BulkDefaults({ rows, disabled, onApply, onClose, ...props }: PluginSurf
   const validSelection = provider?.available && provider.models.some((model) => model.id === selection.model) && provider.modes.some((mode) => mode.id === selection.modeId);
   return <Modal title="Bulk project defaults" icon={<Icon name="Folders" size={18} color={props.theme.colors.foreground} />} open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Modal.Content>
-      {step === "projects" ? <SettingsSection title="Choose projects" info="Select each project to update. No projects are selected automatically. Repository, automatic execution, worktree, workspace, base branch, and status policies stay unchanged.">
+      {step === "projects" ? <SettingsSection title="Choose projects" info="Select each project to update. No projects are selected automatically. Existing mappings keep their repository, automatic execution, worktree, workspace, base branch, and status policies. New mappings are created with defaults, including automatic execution on.">
         <SettingsCard>{rows.map(({ id, title }) => <SettingsSwitch key={id} label={title} hint={`Project ID ${id}`} value={projectIds.includes(id)} disabled={disabled} onValueChange={(selected) => setProjectIds((current) => selected ? [...current, id] : current.filter((projectId) => projectId !== id))} />)}</SettingsCard>
         <SettingsCard><SettingsAction label={`${projectIds.length} projects selected`} actionLabel="Choose defaults" disabled={disabled || !projectIds.length} onPress={() => setStep("defaults")} /></SettingsCard>
       </SettingsSection> : <>
@@ -118,7 +119,7 @@ function BulkDefaults({ rows, disabled, onApply, onClose, ...props }: PluginSurf
           <ProviderErrors providers={(catalog.data || []).filter((item) => item.id === selection.provider)} />
           <Feedback theme={props.theme} error={catalog.error} message={catalog.loading ? "Loading providers…" : !catalog.error && !catalog.data?.some((item) => item.available) ? "No available providers were discovered." : provider?.available && (!provider.models.length || !provider.modes.length) ? "This provider has no discovered model or mode to select. Refresh or choose another provider." : undefined} />
         </SettingsSection>
-        <SettingsSection title="Apply to selected projects" info={`${rows.filter(({ id }) => projectIds.includes(id)).map(({ title }) => title).join(", ")}. Only provider, model, and mode change. New mappings have a blank repository override and automatic execution off. Global automatic delegation is never changed. This updates the settings draft only.`}>
+        <SettingsSection title="Apply to selected projects" info={`${rows.filter(({ id }) => projectIds.includes(id)).map(({ title }) => title).join(", ")}. Only provider, model, and mode change. New mappings have a blank repository override and automatic execution on. Global automatic delegation is never changed. This updates the settings draft only.`}>
           <SettingsCard>
             <SettingsAction label={`${projectIds.length} selected projects`} actionLabel="Change selection" disabled={disabled} onPress={() => setStep("projects")} />
             <SettingsAction label="Project defaults" hint="Save changes and run readiness afterward." actionLabel="Apply to draft" disabled={disabled || catalog.loading || !!catalog.error || !projectIds.length || !validSelection} onPress={() => onApply(projectIds, selection)} />
@@ -158,11 +159,11 @@ export function ProjectRepositories({ config, projects, loading, error, connecte
     setEditing({ id: initialProjectId, title: rows.find((row) => row.id === initialProjectId)?.title || `Project ${initialProjectId}` });
   }, [initialProjectId, rows]);
   return <>
-    <SettingsSection title="Project repositories" info="Global automatic delegation claims tasks across all of the agent's projects without a project filter. Disabled or unmapped projects can still be claimed and fail. Readiness is based on the last saved configuration, not this draft. Save changes and run readiness again after applying edits." trailing={<RefreshButton theme={props.theme} label="Refresh projects" disabled={disabled || loading || !connected} onPress={refresh} />}>
+    <SettingsSection title="Project repositories" info="Global automatic delegation claims tasks across all of the agent's projects without a project filter. Projects without saved overrides are enabled by default, and an explicit automatic-off does not exclude a project from claims. Readiness is based on the last saved configuration, not this draft. Save changes and run readiness again after applying edits." trailing={<RefreshButton theme={props.theme} label="Refresh projects" disabled={disabled || loading || !connected} onPress={refresh} />}>
       {rows.length > 0 && <SettingsCard>{rows.map(({ id, title }) => {
         const match = projects.find((project) => String(project.id) === id)?.repositoryMatch;
         const repository = config.projects[id]?.repository || (match?.status === "matched" ? `Matched · ${match.candidate.repository}` : match?.status === "ambiguous" ? "Multiple checkouts match. Choose explicitly." : match?.status === "unavailable" ? "Repository discovery unavailable" : "No matching checkout");
-        const draft = !config.projects[id] ? "Draft has no project mapping." : config.projects[id].automatic ? "Draft automatic execution on." : "Draft automatic execution off.";
+        const draft = !config.projects[id] ? "No saved overrides. Automatic execution enabled by default." : config.projects[id].automatic ? "Draft automatic execution on." : "Draft automatic execution off (explicit).";
         const hint = `${repository}\n${draft} ${savedReadinessHint(savedReadiness.get(id))}`;
         return <SettingsAction key={id} label={title} hint={hint} actionLabel="Configure" disabled={disabled} onPress={() => setEditing({ id, title })} />;
       })}</SettingsCard>}

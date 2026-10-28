@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Text } from "react-native";
-import { openExternalUrl, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { copyText, Icon, Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSwitch, useToast } from "@getpaseo/plugin/client/ui";
 import type { RerunResult } from "../shared/experience";
 import { continuationPreviewRpc, queueRpc, recoverHandoffRpc, rerunDiscardRpc, rerunPreviewRpc, rerunReconcileRpc, rerunSubmitRpc, smokePreviewRpc, statusRpc } from "../shared/rpc";

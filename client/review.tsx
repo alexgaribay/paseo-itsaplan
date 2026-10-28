@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import type { PublicSession } from "../shared/models";
 import type { ExecutionReview } from "../shared/experience";

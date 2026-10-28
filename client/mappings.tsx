@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import type { Config, Selection } from "../shared/config";
 import type { Project } from "../shared/models";
@@ -25,18 +26,15 @@ export function ChatMappings({ config, projects, onChange, disabled }: {
   const [threadId, setThreadId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [inputVersion, setInputVersion] = useState(0);
-  const options = [{ value: "", label: "Select a mapped project" }, ...Object.keys(config.projects).map((id) => {
-    const project = projects.find((item) => String(item.id) === id);
-    return { value: id, label: project ? `${project.name} (${project.key})` : `Project ID ${id}` };
-  })];
-  return <SettingsSection title="Chat routing" info="Chat messages do not include a project. Route each exact thread ID to a configured project before starting that conversation.">
+  const options = [{ value: "", label: "Select a project" }, ...projects.map((item) => ({ value: String(item.id), label: `${item.name} (${item.key})` })), ...Object.keys(config.projects).filter((id) => !projects.some((item) => String(item.id) === id)).map((id) => ({ value: id, label: `Project ID ${id} (saved overrides)` }))];
+  return <SettingsSection title="Chat routing" info="Chat messages do not include a project. Route each exact thread ID to a visible project before starting that conversation. Routing does not create project configuration; projects without overrides use defaults.">
     <SettingsCard>
       <SettingsInput key={inputVersion} label="Chat thread ID" initialValue="" onChangeText={setThreadId} disabled={disabled} />
       <SettingsSelect label="Project" value={projectId} options={options} onValueChange={setProjectId} disabled={disabled} />
-      <SettingsAction label="Thread mapping" actionLabel="Add mapping" disabled={disabled || !threadId.trim() || !config.projects[projectId]} onPress={() => { onChange({ ...config.chatProjects, [threadId.trim()]: projectId }); setThreadId(""); setInputVersion((value) => value + 1); }} />
+      <SettingsAction label="Thread mapping" actionLabel="Add mapping" disabled={disabled || !threadId.trim() || !projectId} onPress={() => { onChange({ ...config.chatProjects, [threadId.trim()]: projectId }); setThreadId(""); setInputVersion((value) => value + 1); }} />
     </SettingsCard>
     {Object.entries(config.chatProjects).map(([thread, mappedProject]) => <SettingsCard key={thread}>
-      <SettingsSelect label={`Thread ${thread}`} value={mappedProject} options={config.projects[mappedProject] ? options : [...options, { value: mappedProject, label: `Unmapped project ID ${mappedProject}` }]} error={config.projects[mappedProject] ? undefined : "Choose a mapped project or remove this thread mapping before saving."} onValueChange={(next) => onChange({ ...config.chatProjects, [thread]: next })} disabled={disabled} />
+      <SettingsSelect label={`Thread ${thread}`} value={mappedProject} options={options.some((option) => option.value === mappedProject) ? options : [...options, { value: mappedProject, label: `Project ID ${mappedProject}` }]} onValueChange={(next) => onChange({ ...config.chatProjects, [thread]: next })} disabled={disabled} />
       <SettingsAction label="Thread mapping" actionLabel="Remove" disabled={disabled} onPress={() => { const next = { ...config.chatProjects }; delete next[thread]; onChange(next); }} />
     </SettingsCard>)}
   </SettingsSection>;

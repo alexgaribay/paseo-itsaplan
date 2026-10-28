@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { Text } from "react-native";
-import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { copyText, Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection, useToast } from "@getpaseo/plugin/client/ui";
 import { diagnosticsRpc } from "../shared/rpc";
 import { Feedback, useAction, useResource } from "./common";

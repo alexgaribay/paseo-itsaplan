@@ -1,5 +1,6 @@
 import { useCallback } from "react";
-import { openExternalUrl, useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { openExternalUrl, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useBotRpc as useRpc } from "./bot-context";
 import { Modal, SettingsAction, SettingsCard, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
 import { taskContextRpc } from "../shared/rpc";
 import { Feedback, RefreshButton, useAction, useResource, Warning } from "./common";
