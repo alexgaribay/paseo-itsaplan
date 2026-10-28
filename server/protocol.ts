@@ -13,6 +13,7 @@ import type { RerunRequest, TaskIntent } from "../shared/experience";
 import { ConfigurationError } from "./errors";
 import { parseRequestComment, smokeOutput, smokeTask } from "./task";
 import { collectTaskContext } from "./task-context";
+import { workflowColumnSchema, type WorkflowColumn } from "../shared/workflow";
 
 const positiveId = z.number().int().positive();
 const projectWire = projectSchema.omit({ repositoryMatch: true }).extend({ ref: z.string().min(1), teamId: positiveId.optional() });
@@ -51,6 +52,13 @@ const feedWire = z.object({
 });
 const queuePageWire = z.object({
   items: z.array(queueRunWire).max(100), total: z.number().int().nonnegative(), page: positiveId, pageSize: positiveId.max(100),
+});
+// Upstream has no GET /columns route; a project's columns arrive in the project view
+// (GET /projects/:ref), whose columns field is the project-scoped column list. The
+// shared schema strips the wire-only color/wip/auto-assign fields.
+const projectBoardWire = z.object({
+  project: z.object({ id: positiveId }),
+  columns: z.array(workflowColumnSchema).max(500),
 });
 const actorWire = z.object({
   id: positiveId, userId: z.string().min(1), username: z.string().min(1), kind: z.enum(["external", "internal"]),
@@ -306,6 +314,23 @@ export class Client implements Protocol {
     await this.request("POST", `/issues/${issueId}/comments`, { body: evidence }, signal);
     await this.request("PATCH", `/issues/${issueId}`, { columnId }, signal);
   }
+  // Upstream serves no GET /columns route; the project view carries the project-scoped
+  // column list, guarded by project membership, so a denial propagates untouched.
+  async columns(projectId: number, signal?: AbortSignal): Promise<WorkflowColumn[]> {
+    const ref = await this.projectReference(projectId, signal);
+    const board = await this.request("GET", `/projects/${encodeURIComponent(ref)}`, undefined, signal, projectBoardWire, 30_000, contextLimits.responseBytes);
+    if (board.project.id !== projectId) throw new RequestError(502, "Invalid project scope from It's a Plan");
+    for (const column of board.columns) if (column.projectId !== projectId) throw new RequestError(502, "Invalid column project from It's a Plan");
+    return board.columns;
+  }
+  // Moves one issue with a bare column PATCH; upstream refuses a column of another
+  // project (400) and a full hard-WIP column (409). The receipt must confirm the move.
+  async setColumn(issueId: number, columnId: number, signal?: AbortSignal): Promise<void> {
+    input(positiveId, issueId);
+    input(positiveId, columnId);
+    const receipt = await this.request("PATCH", `/issues/${issueId}`, { columnId }, signal, z.object({ id: positiveId, columnId: positiveId }));
+    if (receipt.id !== issueId || receipt.columnId !== columnId) throw new RequestError(502, "Invalid column move receipt from It's a Plan");
+  }
   async identity(signal?: AbortSignal): Promise<{ id: string; username: string | null; isAgent: boolean }> {
     const identity = await this.request("GET", "/me", undefined, signal, z.discriminatedUnion("authenticated", [
       z.object({ authenticated: z.literal(false) }),
@@ -469,6 +494,35 @@ export class Client implements Protocol {
       cursors.add(cursor);
     }
     return { items, complete: false };
+  }
+  // A workflow notice comment is reconciled against the authoritative feed, never
+  // blind-posted. The caller appends a durable unique marker to `body` and persists
+  // "submitting" before the first dispatch; allowCreate is true only on that call.
+  // An exact owning comment anywhere in a complete feed is the delivery receipt —
+  // including after a lost POST acknowledgment — so a retry cannot duplicate the
+  // notice. Only an agent's own identity may reconcile or post; every ambiguity
+  // fails closed: incomplete feed, duplicate marker, mutated body, or a marker
+  // owned by another account.
+  async workflowComment(issueId: number, marker: string, body: string, allowCreate: boolean, signal?: AbortSignal): Promise<{ id: number } | null> {
+    input(positiveId, issueId);
+    input(z.string().min(1).max(500), marker);
+    input(z.string().min(1).max(50_000), body);
+    input(z.boolean(), allowCreate);
+    if (body.split(marker).length !== 2) throw new ConfigurationError("The workflow notice body does not carry exactly one marker; the notice was not delivered");
+    const actor = await this.identity(signal);
+    if (!actor.isAgent) throw new AgentIdentityError();
+    const feed = await this.commentFeed(issueId, signal);
+    if (!feed.complete) throw new ConfigurationError("The issue's comment history is too large to reconcile the workflow notice; the notice was not delivered");
+    const marked = feed.items.filter((item) => item.body.includes(marker));
+    if (marked.length > 1) throw new ConfigurationError("The workflow notice marker appears on several comments; the notice was not delivered");
+    const existing = marked[0];
+    if (existing) {
+      if (existing.body !== body) throw new ConfigurationError("The existing workflow notice no longer matches the recorded body; the notice was not delivered");
+      if (existing.actorId !== actor.id) throw new ConfigurationError("The workflow notice marker belongs to another account; the notice was not delivered");
+      return { id: existing.id };
+    }
+    if (!allowCreate) return null;
+    return this.comment(issueId, body, signal);
   }
   async test(signal?: AbortSignal): Promise<void> {
     if (!(await this.identity(signal)).isAgent) throw new AgentIdentityError();

@@ -103,6 +103,9 @@ function protocol() {
     getRun: async (id) => ({ id, agentId: 9, username: "worker", projectId: "2", projectName: "Project", issueId: 8, issueIdentifier: "PRJ-8", prompt: "Original task intent", trigger: "delegation", status: "success", executionState: "success", attempts: 1, createdAt: "2026-10-25T00:00:00Z", nextAttemptAt: "2026-10-25T00:00:00Z" }),
     issueSelection: async () => ({}),
     context: async (issue) => ({ version: 1, issueId: issue.id, projectId: issue.projectId, capturedAt: Date.now(), digest: "a".repeat(64), text: "Approved optional context", warnings: [], development: [], assets: [] }),
+    columns: async () => { throw new Error("Unexpected automatic workflow column discovery"); },
+    setColumn: async () => { throw new Error("Unexpected automatic workflow transition"); },
+    workflowComment: async () => { throw new Error("Unexpected automatic workflow report"); },
     search: async () => [], transition: async () => { throw new Error("Unexpected automatic issue transition"); }, test: async () => {},
   };
   return { api, reports, events, beats: () => beats, cancel: () => { canceled = true; } };
@@ -110,7 +113,8 @@ function protocol() {
 const running: Engine[] = [];
 afterEach(async () => { await Promise.all(running.splice(0).map((engine) => engine.stop())); });
 function setup(patch: Partial<Config> = {}) {
-  const config = { ...defaults(), serverUrl: "http://127.0.0.1:9876", defaultProvider: "omp", defaultModel: "model", defaultModeId: "ask", projects: {
+  const baseline = defaults();
+  const config = { ...baseline, workflow: { ...baseline.workflow, mode: "review" as const }, serverUrl: "http://127.0.0.1:9876", defaultProvider: "omp", defaultModel: "model", defaultModeId: "ask", projects: {
     "1": { repository: "/configured/one", provider: "", model: "", modeId: "", workspaceId: "", automatic: true, worktree: true, baseBranch: "main" },
     "2": { repository: "/configured/two", provider: "codex", model: "code-model", modeId: "review", workspaceId: "", automatic: true, worktree: false, baseBranch: "" },
   }, ...patch };

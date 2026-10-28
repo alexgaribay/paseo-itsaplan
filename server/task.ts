@@ -67,7 +67,7 @@ Decisions and Discoveries: Significant findings not already recorded; reference 
 Remaining Work: Limitations, unresolved blockers, needed approvals and follow-up work.
 References: Only actual commits, pull requests and documentation.
 
-Distinguish implementation, tests, pull requests, review readiness and issue completion. Label unverified assumptions; never invent checks, approval, references or completion. The plugin delivers the final answer through the execution API, not an automatic issue comment: do not post a duplicate completion comment or change issue fields/status merely because this report or the coding turn is finished.`;
+Distinguish implementation, tests, pull requests, review readiness and issue completion. Label unverified assumptions; never invent checks, approval, references or completion. The plugin owns execution-result delivery and any configured automatic lifecycle: do not post a duplicate completion comment or independently change issue fields/status merely because this report or the coding turn is finished.`;
 
 // These markers can deny reuse or reporting. Their absence never proves trusted scope.
 export function knownTaskRestrictions(input: { request: string; systemPrompt: string; requirements: string; source?: string; acceptance?: { expectedOutput: string; noTools: boolean } }): string[] {

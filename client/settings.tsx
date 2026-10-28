@@ -13,6 +13,7 @@ import { ProjectRepositories } from "./projects";
 import { BackLink, NavigationRow } from "./navigation";
 import { DelegationTestSetup } from "./smoke";
 import { BotsEditor, BotSelector } from "./bots";
+import { WorkflowFields, workflowInfo } from "./workflow";
 
 export function SettingsScreen({ initialDetail, ...props }: PluginSurfaceProps & { openExecutions(botId: string): void; initialDetail?: "agents" }) {
   const settings = useSettings(preferences);
@@ -43,6 +44,7 @@ function SettingsEditor({ settings, openExecutions, botId, onSelectBot, initialD
   const [projectId, setProjectId] = useState<string>();
   const [readiness, setReadiness] = useState<{ revision: string; value: Readiness }>();
   const [testOpen, setTestOpen] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string>();
   const action = useAction();
   const toast = useToast();
   const providers = useRpc(providersRpc);
@@ -76,7 +78,7 @@ function SettingsEditor({ settings, openExecutions, botId, onSelectBot, initialD
     else if (target.kind === "project" || target.kind === "projects") { setProjectId(target.projectId); setDetail("projects"); }
     else setDetail("connection");
   };
-  const validationError = configurationError(values);
+  const validationError = configurationError(values) || workflowError;
   const summaries: Record<(typeof panels)[number], string> = {
     runtime: values.continuation?.enabled ? "Reviewed continuation allowed" : values.activityPrivacy && values.activityPrivacy !== "off" ? "Tool activity sharing enabled" : "Fresh sessions · Tool activity off",
     polling: `Every ${values.pollIntervalMs / 1000} seconds`,
@@ -125,6 +127,11 @@ function SettingsEditor({ settings, openExecutions, botId, onSelectBot, initialD
       <SettingsSection title="Delegation" info="Shared settings affect future work for all enabled external agents. Existing work keeps its captured settings. Connection and runner credential changes drain active work before replacement.">
         <SettingsCard>
           <SettingsSwitch label="Automatic delegation" hint="Global claims are unfiltered. Projects without overrides are enabled by default, and an explicit automatic-off does not exclude a project from claims. Runtime pause is separate from this saved switch." value={values.automatic} disabled={disabled} onValueChange={(automatic) => set({ automatic })} />
+        </SettingsCard>
+      </SettingsSection>
+      <SettingsSection title="Automatic lifecycle" info={workflowInfo(values.workflow.mode, "global")}>
+        <SettingsCard key={`workflow-${formVersion}`}>
+          <WorkflowFields theme={props.theme} value={values.workflow} onChange={(workflow) => set({ workflow })} onValidationChange={setWorkflowError} disabled={disabled} />
         </SettingsCard>
       </SettingsSection>
       <SettingsSection title="Shared execution defaults" info="Used by external agents without a named Paseo profile; issue and project overrides take precedence. An attached profile supplies the full launch bundle instead. Blank model or mode uses the provider default and remains unresolved until session creation. No-tools is instruction-only, not enforced isolation." trailing={<RefreshButton theme={props.theme} label="Refresh providers" disabled={disabled || catalog.loading} onPress={catalog.refresh} />}>

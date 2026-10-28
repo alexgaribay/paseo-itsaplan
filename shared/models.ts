@@ -6,6 +6,7 @@ import { acceptanceSchema, executionEvidenceSchema, executionObservationSchema, 
 import { persistedTaskContextSchema } from "./task-context";
 import { taskProvenanceSchema, continuationGrantSchema } from "./continuation";
 import { ticketReportPrivateSchema, ticketReportReceiptSchema } from "./ticket-report";
+import { workflowStateSchema } from "./workflow";
 export const runSchema = z.object({
   id: z.number().int().positive(), attempts: z.number().int().positive(), traceEvents: z.boolean().optional(),
   trigger: z.enum(["mention", "delegation", "field", "schedule", "manual", "status", "event"]),
@@ -40,7 +41,7 @@ export const eventSchema = z.union([
   z.object({ type: z.literal("TOOL_CALL_END"), toolCallId: z.string().max(200) }),
   z.object({ type: z.literal("TOOL_CALL_RESULT"), toolCallId: z.string().max(200), messageId: z.string().max(200), content: z.string().max(12_000), role: z.literal("tool") }),
 ]);
-export const issueSchema = z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), identifier: z.string(), title: z.string(), description: z.string().nullable().optional(), columnId: z.number().nullable().optional() });
+export const issueSchema = z.object({ id: z.number().int().positive(), projectId: z.number().int().positive(), identifier: z.string(), title: z.string(), description: z.string().nullable().optional(), columnId: z.number().nullable().optional(), delegateUserId: z.string().nullable().optional() });
 export type Issue = z.infer<typeof issueSchema>;
 export const linkedRepositorySchema = z.object({ id: z.number().int().positive(), provider: z.string(), fullName: z.string(), webUrl: z.string() });
 export type LinkedRepository = z.infer<typeof linkedRepositorySchema>;
@@ -60,7 +61,7 @@ export const sessionSchema = z.object({
   serverUrl: z.string(),
   issueId: z.number().nullable(), issueIdentifier: z.string().nullable(), projectId: z.string(),
   agentId: z.string(), workspaceId: z.string().nullable(), cwd: z.string(), provider: z.string(),
-  phase: z.enum(["preparing", "created", "sending", "running", "stopping", "reporting", "finished", "canceled", "lease-lost", "uncertain"]),
+  phase: z.enum(["preparing", "created", "sending", "running", "finalizing", "stopping", "reporting", "finished", "canceled", "lease-lost", "uncertain"]),
   createdAt: z.number(), updatedAt: z.number(), eventOffset: z.number().int().nonnegative().default(0),
   pendingEvents: z.array(eventSchema).optional(),
   result: resultSchema.optional(), error: z.string().optional(), task: z.union([z.object({ kind: z.literal("run"), run: runSchema }), z.object({ kind: z.literal("chat"), message: chatSchema })]).optional(),
@@ -80,6 +81,7 @@ export const sessionSchema = z.object({
   streamedTextLength: z.number().int().nonnegative().optional(),
   limits: z.object({ executionTimeoutMs: z.number().positive(), leaseSafetyMs: z.number().positive() }).optional(),
   review: z.object({ reviewedAt: z.number(), fingerprint: z.string(), observation: executionObservationSchema }).optional(),
+  workflow: workflowStateSchema.optional(),
 });
 export type SessionRecord = z.infer<typeof sessionSchema>;
 export const publicSessionSchema = sessionSchema.pick({
@@ -89,6 +91,7 @@ export const publicSessionSchema = sessionSchema.pick({
   result: true, error: true, model: true, modeId: true, pendingPermissionCount: true,
   lastHeartbeatAt: true, cancellation: true, plan: true, evidence: true, acceptance: true,
   limits: true, review: true, branchName: true, ticketReportReceipt: true,
+  workflow: true,
 });
 export type PublicSession = z.infer<typeof publicSessionSchema>;
 export const providerSchema = z.object({ id: z.string(), available: z.boolean(), error: z.string().nullable().optional(), models: z.array(z.object({ id: z.string(), name: z.string() })), modes: z.array(z.object({ id: z.string(), name: z.string() })) });

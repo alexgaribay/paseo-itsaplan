@@ -4,6 +4,7 @@ import { useBotRpc as useRpc } from "./bot-context";
 import { Modal, SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
 import { cancelRpc, controlRpc, milestoneRpc, rerunDiscardRpc, rerunReconcileRpc, statusRpc } from "../shared/rpc";
 import { milestoneSchema, type Milestone } from "../shared/config";
+import type { WorkflowState } from "../shared/workflow";
 import type { PublicSession } from "../shared/models";
 import type { RerunRequest } from "../shared/experience";
 import { Feedback, issueUrl, RefreshButton, useAction, useResource } from "./common";
@@ -28,9 +29,15 @@ type SessionsProps = PluginSurfaceProps & {
 const terminalPhases: Partial<Record<PublicSession["phase"], true>> = { finished: true, canceled: true, "lease-lost": true };
 const stageLabels: Record<PublicSession["phase"], string> = {
   preparing: "Preparing execution", created: "Agent created", sending: "Sending task", running: "Running",
-  stopping: "Cancellation pending", reporting: "Delivering result", finished: "Execution finished", canceled: "Execution canceled",
+  finalizing: "Validating, committing and publishing", stopping: "Cancellation pending", reporting: "Delivering result", finished: "Execution finished", canceled: "Execution canceled",
   "lease-lost": "Lease lost, inspect execution", uncertain: "Outcome unknown, inspect execution",
 };
+const workflowStageLabels: Record<WorkflowState["stage"], string> = {
+  starting: "Starting", running: "Implementation running", validating: "Validating result", committing: "Committing on task branch",
+  integrating: "Integrating onto target branch", publishing: "Publishing to remote", published: "Published, confirming", completing: "Confirming issue completion", completed: "Completed and marked Done",
+  blocked: "Automatic completion blocked", uncertain: "Issue completion unconfirmed",
+};
+const shortCommit = (commit: string) => commit.slice(0, 12);
 const milestoneLabels: Record<Milestone, string> = {
   "turn-completed": "Turn completed", "implementation-completed": "Implementation completed", "tests-passed": "Tests passed",
   "pull-request-created": "Pull request created", "ready-for-review": "Ready for review", "issue-completed": "Issue completed",
@@ -47,6 +54,7 @@ function cancellationLabel(session: PublicSession): string {
 }
 function deliveryLabel(session: PublicSession): string {
   if (session.kind === "manual") return session.result ? "Recorded locally, no automatic delivery" : "No result recorded";
+  if (session.phase === "finalizing") return session.result ? "Result recorded, publication pending" : "Finalizing, result not yet recorded";
   if (session.phase === "finished") return "Delivered";
   if (session.phase === "reporting") return "Pending delivery";
   if (session.phase === "uncertain" || session.phase === "lease-lost") return "Unknown";
@@ -126,6 +134,19 @@ function Session({ session, requests, webUrl, serverUrl, continuationEnabled, re
         {!terminalPhases[session.phase] && <SettingsAction label="Request cancellation" hint="A request does not confirm the native agent has stopped. Inspect its cancellation status after refreshing." actionLabel="Cancel session" disabled={action.pending || session.cancellation === "requested"} onPress={() => { void action.run(async () => { const result = await cancel({ key: session.key }); refresh(); if (!result.ok) throw new Error(result.message); return result.message; }); }} />}
       </SettingsCard>
     </SettingsSection>
+    {session.workflow && <SettingsSection title="Git workflow" info="Lifecycle evidence for the automatic path. Done is marked only after publication on the target branch is confirmed; blocked checks, merge conflicts, and authentication failures never complete an issue. These are recorded observations, not proof of current remote state.">
+      <SettingsCard>
+        <SettingsRow label={workflowStageLabels[session.workflow.stage]} hint={`Mode ${session.workflow.options.mode === "automatic" ? "automatic" : "review"} · target ${session.workflow.options.targetBranch} · remote ${session.workflow.options.remote}`} />
+        {session.workflow.ownership?.branchName && <SettingsRow label="Task branch" hint={session.workflow.ownership.branchName} />}
+        {session.workflow.taskCommit && <SettingsRow label="Task commit" hint={shortCommit(session.workflow.taskCommit)} />}
+        {session.workflow.integratedCommit && <SettingsRow label="Integrated commit" hint={shortCommit(session.workflow.integratedCommit)} />}
+        {session.workflow.checks.length ? session.workflow.checks.map((check, index) => <SettingsRow key={`${check.commit}-${index}`} label={`${check.command.join(" ")} · passed`} hint={`Commit ${shortCommit(check.commit)} · exit code 0`} />) : <SettingsRow label="Verification checks" hint="No completed checks recorded yet" />}
+        {session.workflow.publishedAt && <SettingsRow label="Published" hint={timestamp(session.workflow.publishedAt)} />}
+        {session.workflow.remoteIdentity && <SettingsRow label="Remote identity" hint={session.workflow.remoteIdentity} />}
+        {session.workflow.error && <SettingsRow label="Workflow blocked, issue not completed" error={session.workflow.error} />}
+        {session.workflow.notices.map((notice, index) => <SettingsRow key={`${notice.kind}-${index}`} label={`Issue update ${notice.kind} · ${notice.state}`} hint={notice.commentId ? `${notice.body} · comment ${notice.commentId}` : notice.body} />)}
+      </SettingsCard>
+    </SettingsSection>}
     {!currentServer && <Feedback theme={props.theme} message="This execution belongs to a different It's a Plan server. Restore that configuration before issue actions." />}
     {session.acceptance && <SettingsSection title="Acceptance evidence" info="Unknown checks and incomplete history are not proof that the acceptance contract passed.">
       <SettingsCard>
@@ -194,7 +215,7 @@ export function Sessions({ page, sessionKey, onNavigate, ...props }: SessionsPro
   const load = useCallback(() => status({}), [status]);
   const resource = useResource(load, 5000);
   const sessions = [...(resource.data?.sessions || [])].sort((a, b) => b.updatedAt - a.updatedAt);
-  const needsAttention = (session: PublicSession) => session.phase === "uncertain" || session.phase === "lease-lost" || session.cancellation === "unconfirmed" || (!terminalPhases[session.phase] && !!session.pendingPermissionCount) || (!session.review && (session.result?.status === "failed" || session.acceptance?.status === "failed"));
+  const needsAttention = (session: PublicSession) => session.phase === "uncertain" || session.phase === "lease-lost" || session.workflow?.stage === "blocked" || session.workflow?.stage === "uncertain" || session.cancellation === "unconfirmed" || (!terminalPhases[session.phase] && !!session.pendingPermissionCount) || (!session.review && (session.result?.status === "failed" || session.acceptance?.status === "failed"));
   const active = sessions.filter((session) => !terminalPhases[session.phase] && !needsAttention(session));
   const attention = sessions.filter(needsAttention);
   const history = sessions.filter((session) => terminalPhases[session.phase] || session.phase === "uncertain" || session.cancellation === "unconfirmed");
@@ -209,7 +230,7 @@ export function Sessions({ page, sessionKey, onNavigate, ...props }: SessionsPro
     return result.message;
   }); };
   const refreshButton = <RefreshButton theme={props.theme} label="Refresh execution status" onPress={resource.refresh} disabled={resource.loading} />;
-  const sessionRows = (items: PublicSession[]) => <SettingsCard>{items.map((session) => <NavigationRow key={session.key} theme={props.theme} label={sessionTitle(session)} hint={`${sessionStage(session)}${session.error || session.result?.error ? " · Execution error, inspect details" : session.acceptance?.status === "failed" ? " · Acceptance failed" : ""}`} onPress={() => onNavigate("session", session.key)} />)}</SettingsCard>;
+  const sessionRows = (items: PublicSession[]) => <SettingsCard>{items.map((session) => <NavigationRow key={session.key} theme={props.theme} label={sessionTitle(session)} hint={`${sessionStage(session)}${session.workflow?.stage === "uncertain" ? " · Issue completion unconfirmed" : session.workflow?.stage === "blocked" ? " · Git workflow blocked" : session.error || session.result?.error ? " · Execution error, inspect details" : session.acceptance?.status === "failed" ? " · Acceptance failed" : ""}`} onPress={() => onNavigate("session", session.key)} />)}</SettingsCard>;
   return <>
     <Feedback theme={props.theme} error={resource.error} />
     {page === "overview" && <>

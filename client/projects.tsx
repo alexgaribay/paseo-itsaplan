@@ -9,6 +9,7 @@ import { providersRpc } from "../shared/rpc";
 import { Feedback, ProviderErrors, RefreshButton, SelectionFields, useResource } from "./common";
 import { PolicyFields } from "./mappings";
 import { ContextSettings } from "./context-settings";
+import { WorkflowFields, workflowInfo } from "./workflow";
 
 type ProjectRow = { id: string; title: string };
 
@@ -33,6 +34,7 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
   const [mapping, setMapping] = useState<ProjectMapping>(() => initial || projectMappingSchema.parse({}));
   const set = (patch: Partial<ProjectMapping>) => setMapping((current) => ({ ...current, ...patch }));
   const [fieldValidation, setFieldValidation] = useState<{ bindings: ProjectMapping["fieldBindings"]; error?: string }>();
+  const [workflowEditorError, setWorkflowEditorError] = useState<string>();
   const onFieldValidation = useCallback((error?: string) => setFieldValidation({ bindings: mapping.fieldBindings, error }), [mapping.fieldBindings]);
   const fieldError = mapping.fieldBindings?.length ? fieldValidation?.bindings !== mapping.fieldBindings ? "Validating saved field bindings…" : fieldValidation?.error : undefined;
   const matchedPath = match?.status === "matched" ? match.candidate.repository : "";
@@ -60,7 +62,7 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
   if (mapping.repository && !selectedProject) projectOptions.push({ value: mapping.repository, label: `Custom override · ${mapping.repository}` });
   const validation = projectMappingSchema.safeParse(mapping);
   const absolute = !mapping.repository || mapping.repository.startsWith("/") || /^[A-Za-z]:[\\/]/.test(mapping.repository);
-  const error = !absolute ? "Enter an absolute Git repository path." : selectedProject && selectedProject.projectKind !== "git" ? "This Paseo project is not a Git checkout. Choose a Git project for execution." : manualWorkspace && !mapping.workspaceId ? "Enter a workspace ID or choose No workspace override." : !validation.success ? validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n") : undefined;
+  const error = !absolute ? "Enter an absolute Git repository path." : selectedProject && selectedProject.projectKind !== "git" ? "This Paseo project is not a Git checkout. Choose a Git project for execution." : manualWorkspace && !mapping.workspaceId ? "Enter a workspace ID or choose No workspace override." : !validation.success ? validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n") : workflowEditorError || undefined;
   return <Modal title={title} icon={<Icon name="FolderGit2" size={18} color={props.theme.colors.foreground} />} open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Modal.Content>
       <SettingsSection title="Repository" info="Choose a project registered on this Paseo host, including projects without an active workspace. Automatic repository matching is the default. A project or workspace selection sets an explicit override; execution requires a valid Git checkout." trailing={<RefreshButton theme={props.theme} label="Refresh Paseo projects" disabled={disabled || localProjects.loading || workspaces.loading} onPress={() => { localProjects.refresh(); workspaces.refresh(); }} />}>
@@ -95,7 +97,15 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
         <ProviderErrors providers={(catalog.data || []).filter((provider) => provider.id === (mapping.provider || config.defaultProvider))} />
         <Feedback theme={props.theme} error={catalog.error} />
       </SettingsSection>
-      <SettingsSection title="Issue status transitions" info="Optional destination column IDs for this project's milestones. Blank fields inherit global policies. Transitions require explicit evidence; a finished agent turn never completes an issue.">
+      <SettingsSection title="Git workflow" info={workflowInfo(mapping.workflow?.mode || config.workflow.mode, "project")}>
+        <SettingsCard>
+          <SettingsSelect label="Workflow settings" value={mapping.workflow ? "override" : "inherit"} options={[{ value: "inherit", label: "Inherit global workflow" }, { value: "override", label: "Override global workflow" }]} disabled={disabled} onValueChange={(mode) => { setWorkflowEditorError(undefined); set(mode === "override" ? { workflow: { ...config.workflow } } : { workflow: undefined }); }} />
+        </SettingsCard>
+        {mapping.workflow && <SettingsCard>
+          <WorkflowFields theme={props.theme} value={mapping.workflow} onChange={(workflow) => set({ workflow })} onValidationChange={setWorkflowEditorError} disabled={disabled} columns />
+        </SettingsCard>}
+      </SettingsSection>
+      <SettingsSection title="Issue status transitions" info="Optional destination column IDs for this project's milestones. Blank fields inherit global policies. Manual milestones are evidence-driven and separate from the Git workflow lifecycle; a finished agent turn never completes an issue on its own.">
         <SettingsCard><PolicyFields value={mapping.statusPolicy || {}} onChange={(statusPolicy) => set({ statusPolicy })} disabled={disabled} inherit /></SettingsCard>
       </SettingsSection>
       <BotScope botId={botId}><ContextSettings {...props} projectId={projectId} mapping={mapping} onChange={set} providers={catalog.data || []} disabled={disabled} onValidationChange={onFieldValidation} /></BotScope>

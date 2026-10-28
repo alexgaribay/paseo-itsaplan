@@ -5,6 +5,7 @@ import type { LocalRepository } from "./repository-matching";
 import type { ExecutionEvidence, RerunRequest, TaskIntent } from "../shared/experience";
 import type { PersistedTaskContext, TaskContextAsset, TaskContextSnapshot } from "../shared/task-context";
 import type { UpstreamRun } from "./protocol";
+import type { WorkflowColumn } from "../shared/workflow";
 
 export interface Protocol {
   claim(signal?: AbortSignal): Promise<Run | null>;
@@ -25,6 +26,9 @@ export interface Protocol {
   intent(run: Run, issue?: Issue, signal?: AbortSignal, request?: (id: string) => RerunRequest | undefined): Promise<TaskIntent>;
   search(projectId: number, query: string, signal?: AbortSignal): Promise<Issue[]>;
   transition(issueId: number, columnId: number, evidence: string, signal?: AbortSignal): Promise<void>;
+  columns(projectId: number, signal?: AbortSignal): Promise<WorkflowColumn[]>;
+  setColumn(issueId: number, columnId: number, signal?: AbortSignal): Promise<void>;
+  workflowComment(issueId: number, marker: string, body: string, allowCreate: boolean, signal?: AbortSignal): Promise<{ id: number } | null>;
   test(signal?: AbortSignal): Promise<void>;
 }
 export interface SessionSnapshot {

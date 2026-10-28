@@ -71,7 +71,7 @@ For browser acceptance only, a temporary same-origin local WebSocket relay serve
 - **Optional MCP:** disabled during live execution. Injection/capability/secret behavior has automated coverage, but actual scoped It's a Plan MCP tools across OMP/Codex/Claude were not exercised.
 - **Hard daemon crash/restart:** not forced on the user's shared running daemon. Crash/restart boundaries and stale/missing-session handling have deterministic automated coverage; actual clean plugin reload was exercised.
 - **Live long-duration lease expiry, result-ACK loss and network partition:** covered by deterministic mocked scenarios, not a deliberately disrupted shared environment. The fast live OMP turns do not constitute a 60-second heartbeat soak test.
-- **Gitea push/PR/merge:** intentionally not automated. Map a Gitea-backed repository and use ordinary Paseo tools/permissions; this plugin does not create or merge PRs on its own.
+- **Live forge push/PR/merge:** initial acceptance did not automate this. The automatic Git lifecycle added below is verified against disposable local bare remotes, not live forge authentication, protected-branch policy or PR APIs. PR creation/merge remains outside the plugin.
 - **Native iOS/Android and other host OSes:** not run. React Native plugin SDK components/typechecking and desktop/compact web rendering were checked on macOS.
 
 ## Repeating live acceptance
@@ -351,3 +351,32 @@ Activated the updated plugin through its existing directory registration with `p
 Restored both agents' original unpaused states. Non-claiming authentication checks succeeded for **Dev bot** and **UI Bot**; both reported connected and accepting delegated work. The served client bundle contained the new project-selector controls. No dependency-ordering or companion server changes were installed.
 
 Final publication checks passed both TypeScript configurations and **604 tests, 0 failures, 1982 assertions across 25 files**.
+
+## Plugin-scoped automatic delegation lifecycle — 2026-10-28
+
+Implemented on isolated branch `feat/automatic-delegation-lifecycle`, not the live plugin checkout. The policy affects only eligible It's a Plan delegated implementations; ordinary Paseo sessions, other plugins, manual issue starts, chats, smoke/restricted tasks and scheduled runs are not enrolled. No upstream server change or dependency scheduler was added.
+
+- Both TypeScript configurations passed. The final complete suite passed **673 tests, 0 failures, 2326 assertions across 28 files**.
+- Real Git regressions cover task/integration checks, retained task commits, local-main synchronization, concurrency, conflicts, dirty state, hooks, publication failure/recovery, remote/configuration changes, whitespace-significant local destinations, target-only publication and already-published recovery after another task advances main. Swift package validation runs the installed toolchain; no live Xcode app build is claimed.
+- Protocol coverage verifies project-column discovery through the existing board route, scoped column receipts, external-agent identity, complete owned-comment reconciliation, ambiguous/mutated markers and creation fences.
+- Engine scenarios verify In Progress before prompt dispatch, completed-outcome admission, failed checks and partial outcomes preserving work, changed-delegate rejection, denied Done updates, review/restricted-task exclusion, interrupted finalization across attempts, pinned remotes and lost Done acknowledgments.
+
+### Actual native workspace / HTTP / Git smoke
+
+Launched Paseo **0.13.2** in a disposable loopback-only home with relay/MCP disabled and no upstream credentials. Ran the real Engine and authenticated HTTP Client against an isolated stateful API fixture, creating real workspaces through Paseo's native API and real commits/pushes against private bare repositories:
+
+| Scenario | Observed issue transitions | Upstream result | Durable lifecycle | Publication |
+| --- | --- | --- | --- | --- |
+| Successful implementation | In Progress → Done | success | completed | Task and integration checks passed; remote and local main matched the integrated commit |
+| Failing verification command | In Progress only | failed | blocked | Remote main unchanged; task work preserved |
+| Done applied but HTTP acknowledgment lost | In Progress → Done, one update each | success | completed | Existing Done reconciled without another write |
+
+Each successful scenario recorded two commit-bound verification receipts. Coding turns were **scripted fixtures**, not real model-provider runs; native workspace creation, HTTP behavior, check commands, Git integration and publication were real. No production issue, remote or coding session was modified.
+
+### UI and deployment limits
+
+The actual plugin UI rendered Automatic mode with main/origin defaults and accepted a JSON argv check into its draft on the isolated host. Browser reload/save persistence was not established; project overrides and selected-execution receipt presentation were not interactively verified. No full visual/mobile acceptance or live provider/forge run is claimed.
+
+This worktree has not been merged, installed or reloaded into the user's live Paseo. No live settings, credentials, bot registration or global Paseo defaults were changed.
+
+The `0.0.1` package dry run passed with **94 files**, including the new workflow modules. Closed the owned browser, stopped the isolated daemon gracefully, removed its entire temporary home/repositories and deleted the throwaway smoke program. Removal of the temporary home was confirmed. No package archive was created by the dry run.

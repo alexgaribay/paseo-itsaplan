@@ -123,7 +123,7 @@ async function assertNoOutstanding(context: ExperienceContext, scope: RequestSco
   if (!queue.complete) throw new ConfigurationError("Only a partial queue is visible. An incomplete queue cannot prove this issue has no active work.");
   for (const record of context.storage.records()) {
     if (record.serverUrl !== context.config.serverUrl || record.issueId !== scope.issueId) continue;
-    if (["preparing", "created", "sending", "running", "stopping", "reporting"].includes(record.phase) || record.cancellation === "requested" || record.cancellation === "unconfirmed") throw new ConfigurationError("This issue has active or unresolved native execution. Confirm it is stopped before creating another operation.");
+    if (["preparing", "created", "sending", "running", "finalizing", "stopping", "reporting"].includes(record.phase) || record.cancellation === "requested" || record.cancellation === "unconfirmed") throw new ConfigurationError("This issue has active or unresolved native execution. Confirm it is stopped before creating another operation.");
     if (!record.cwd) continue;
     const native = await context.gateway.inspect(record.agentId, { includeHistory: false });
     if (!native || native.id !== record.agentId) throw new ConfigurationError("The native session's idle state is unavailable. Confirm it is stopped before creating another operation.");

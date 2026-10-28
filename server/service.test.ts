@@ -178,7 +178,8 @@ test("safe settings retain the managed connection and connection changes drain i
     if (path === "/projects/search") return Response.json({ items: [{ id: 1, ref: "ref", key: "PRJ", name: "Project" }], total: 1, page: 1, pageSize: 100 });
     return new Response(null, { status: 204 });
   } });
-  const config = { ...defaults(), serverUrl: server.url.origin, automatic: true, projects: { "1": { repository: "/configured", workspaceId: "", provider: "omp", model: "model", modeId: "ask", automatic: true, worktree: false, baseBranch: "" } } };
+  const baseline = defaults();
+  const config = { ...baseline, workflow: { ...baseline.workflow, mode: "review" as const }, serverUrl: server.url.origin, automatic: true, projects: { "1": { repository: "/configured", workspaceId: "", provider: "omp", model: "model", modeId: "ask", automatic: true, worktree: false, baseBranch: "" } } };
   try {
     await service.configure(config);
     const engine = service.engine!;

@@ -2,6 +2,7 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { fieldBindingsSchema, taskContextOptionsSchema } from "./task-context";
 import { continuationOptionsSchema } from "./continuation";
+import { workflowOptionsSchema } from "./workflow";
 
 export const httpUrl = z.string().trim().refine((value) => {
   try {
@@ -32,6 +33,8 @@ export const projectMappingSchema = selectionSchema.extend({
   worktree: z.boolean().default(true),
   baseBranch: optionalText,
   statusPolicy: z.partialRecord(milestoneSchema, z.number().int().positive()).optional(),
+  // Whole override; absent means the project inherits the global workflow options.
+  workflow: workflowOptionsSchema.optional(),
   taskContext: taskContextOptionsSchema.optional(),
   fieldBindings: fieldBindingsSchema.optional(),
 });
@@ -55,6 +58,7 @@ const connectionSchema = z.object({
   issueOverrides: z.record(z.string(), selectionSchema).default({}),
   chatProjects: z.record(z.string(), z.string()).default({}),
   statusPolicy: z.partialRecord(milestoneSchema, z.number().int().positive()).default({}),
+  workflow: workflowOptionsSchema.default(() => workflowOptionsSchema.parse({})),
   activityPrivacy: z.enum(["off", "metadata", "full"]).optional(),
   continuation: continuationOptionsSchema.optional(),
   mcp: z.object({

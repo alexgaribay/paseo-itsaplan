@@ -62,7 +62,7 @@ export function AdvancedEditor({ panel, config, projects, providers, onApply, on
       </SettingsSection>}
       {panel === "chat" && <ChatMappings config={values} projects={projects} disabled={disabled} onChange={(chatProjects) => set({ chatProjects })} />}
       {panel === "overrides" && <IssueOverrides {...props} config={values} disabled={disabled} onChange={(issueOverrides) => set({ issueOverrides })} />}
-      {panel === "policies" && <SettingsSection title="Destination columns" info="Enter a column ID for each milestone, or leave blank to disable its transition. Submit evidence from a linked session to change status. An agent turn finishing never marks an issue complete.">
+      {panel === "policies" && <SettingsSection title="Destination columns" info="Enter a column ID for each milestone, or leave blank to disable its transition. Submit evidence from a linked session to change status. Manual milestones are evidence-driven and separate from the automatic Git workflow lifecycle, which completes only after confirmed publication. An agent turn finishing never marks an issue complete on its own.">
         <SettingsCard><PolicyFields value={values.statusPolicy} onChange={(statusPolicy) => set({ statusPolicy })} disabled={disabled} /></SettingsCard>
       </SettingsSection>}
       {panel === "runtime" && <>

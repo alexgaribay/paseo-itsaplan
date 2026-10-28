@@ -17,6 +17,7 @@ import { assessAcceptance, nativeSystemPrompt, taskPrompt } from "./task";
 import { assertContinuationGrant, assertSourceNative, captureProvenance, contextRequirementsDigest, executionConfigDigest, factDigest, intentDigest, taskRequirements } from "./continuation";
 import type { ContinuationGrant } from "../shared/continuation";
 import type { TaskContextSnapshot } from "../shared/task-context";
+import { assertWorkflowAuthority, automaticWorkflowInstructions, blockAutomaticWorkflow, completeAutomaticWorkflow, prepareAutomaticWorkflow, startAutomaticWorkflow, type WorkflowContext } from "./workflow";
 
 function compatibleSession(session: SessionSnapshot, selection: Selection, previous?: Selection): boolean {
   const unchangedProvider = previous?.provider === selection.provider;
@@ -306,6 +307,32 @@ export class Engine {
       record = { ...record, ...patch, activityEventIds: [...activityIds], streamedTextLength, updatedAt: Date.now() };
       await this.journal.put(record);
     };
+    const workflowContext: WorkflowContext = {
+      record: () => {
+        if (!record) throw new ConfigurationError("The automatic execution journal is unavailable.");
+        return record;
+      },
+      protocol: this.protocol, signal: stop.signal, persist,
+      assertAuthorized: async (requireIdleSession = true) => {
+        stop.signal.throwIfAborted();
+        if (config.serverUrl !== this.config.serverUrl || secrets.apiKey !== this.secrets.apiKey) throw new ExecutionStop("Connection or execution credentials changed; automatic integration stopped.");
+        await assertWorkflowAuthority(workflowContext.record(), this.protocol, this.gateway, stop.signal, requireIdleSession);
+      },
+    };
+    const finishAutomatic = async () => {
+      await completeAutomaticWorkflow(workflowContext);
+      const current = workflowContext.record();
+      const integration = current.workflow!;
+      const result: Result = { ...current.result!, output: `${current.result?.output ?? ""}\n\nAutomatic integration verified: ${integration.integratedCommit} on ${integration.options.remote}/${integration.options.targetBranch}. The issue was moved to Done.` };
+      events.push({ type: "RUN_FINISHED", threadId, runId: String(externalId) });
+      await persist({ phase: "reporting", result, pendingEvents: [...events], pendingPermissionCount: 0 });
+      this.agentLocks.delete(current.agentId);
+      ownsAgentLock = false;
+      sessionOwned = false;
+      clear();
+      this.notify();
+      await this.report(workflowContext.record());
+    };
     const clear = () => { clearInterval(heartbeat); clearInterval(flushing); clearTimeout(deadline); clearTimeout(safety); };
     active.clear = clear;
     const cancel = () => {
@@ -392,23 +419,33 @@ export class Engine {
           projectId: "", agentId: agentIdFor(key), workspaceId: null, cwd: "", provider: "", phase: "preparing", createdAt: Date.now(), updatedAt: Date.now(), eventOffset: 0, task,
           limits: { executionTimeoutMs: config.executionTimeoutMs, leaseSafetyMs: config.leaseSafetyMs } };
         let retired: SessionRecord | undefined;
-        const prior = this.journal.records().filter((item) => item.serverUrl === record!.serverUrl && item.kind === record!.kind && item.externalId === externalId && ["reporting", "uncertain"].includes(item.phase) && item.result).sort((a, b) => b.attempt - a.attempt)[0];
+        let prior = this.journal.records().filter((item) => item.serverUrl === record!.serverUrl && item.kind === record!.kind && item.externalId === externalId && item.attempt < record!.attempt && item.result &&
+          (["reporting", "uncertain"].includes(item.phase) || item.workflow && ["finalizing", "lease-lost"].includes(item.phase))).sort((a, b) => b.attempt - a.attempt)[0];
         if (prior?.result) {
           const earlier = this.active.get(prior.key);
           this.deliveries.get(prior.key)?.abort();
           earlier?.stop.abort(new ExecutionStop("Superseded execution attempt", "lease-lost"));
           if (earlier) await earlier.done;
           await this.reports.get(prior.key)?.catch(() => {});
+          prior = this.journal.get(prior.key) ?? prior;
+          const priorResult = prior.result;
+          if (!priorResult) throw new StorageError("The recorded completion outcome disappeared during attempt transfer.");
+          const resumeFinalization = !!prior.workflow && priorResult.status === "success" && prior.workflow.stage !== "completed" && ["finalizing", "lease-lost"].includes(prior.phase);
           retired = { ...prior, phase: "lease-lost", error: "Outcome transferred to a newer claimed attempt", updatedAt: Date.now() };
           record = { ...record, agentId: prior.agentId, workspaceId: prior.workspaceId, cwd: prior.cwd, provider: prior.provider, model: prior.model, modeId: prior.modeId,
-            projectId: prior.projectId, projectMapping: prior.projectMapping, plan: prior.plan, intent: prior.intent, evidence: prior.evidence, acceptance: prior.acceptance, phase: "reporting", result: prior.result };
-          if (task.kind === "chat") {
+            projectId: prior.projectId, projectMapping: prior.projectMapping, plan: prior.plan, intent: prior.intent, evidence: prior.evidence, acceptance: prior.acceptance,
+            workflow: prior.workflow, taskIssue: prior.taskIssue, taskContext: prior.taskContext, taskProvenance: prior.taskProvenance,
+            branchName: prior.branchName, nativeLastUserMessageAt: prior.nativeLastUserMessageAt,
+            phase: resumeFinalization ? "finalizing" : "reporting", result: priorResult };
+          if (task.kind === "chat" || resumeFinalization) {
             const answerId = `paseo-${key}`;
             const restored: AgUiEvent[] = [{ type: "RUN_STARTED", threadId, runId: String(externalId) }, { type: "TEXT_MESSAGE_START", messageId: answerId, role: "assistant" }];
-            const output = prior.result.output ?? "";
+            const output = priorResult.output ?? "";
             for (let start = 0; start < Math.min(output.length, 1000000); start += 12000) restored.push({ type: "TEXT_MESSAGE_CONTENT", messageId: answerId, delta: output.slice(start, start + 12000) });
-            restored.push({ type: "TEXT_MESSAGE_END", messageId: answerId }, prior.result.status === "success" ? { type: "RUN_FINISHED", threadId, runId: String(externalId) } : { type: "RUN_ERROR", message: prior.result.error ?? "Agent execution failed" });
+            restored.push({ type: "TEXT_MESSAGE_END", messageId: answerId });
+            if (!resumeFinalization) restored.push(priorResult.status === "success" ? { type: "RUN_FINISHED", threadId, runId: String(externalId) } : { type: "RUN_ERROR", message: priorResult.error ?? "Agent execution failed" });
             record.pendingEvents = restored;
+            events = restored;
           }
         }
         if (retired) await this.journal.putMany([retired, record]);
@@ -424,6 +461,10 @@ export class Engine {
       heartbeat = setInterval(() => { void beat(); }, this.timing.heartbeatMs ?? 60000);
       deadline = setTimeout(() => stop.abort(new ExecutionStop("Execution timeout exceeded; session preserved")), Math.max(1, (record.limits?.executionTimeoutMs ?? config.executionTimeoutMs) - (Date.now() - record.createdAt)));
       stop.signal.throwIfAborted();
+      if (record.phase === "finalizing") {
+        await finishAutomatic();
+        return;
+      }
 
 
       const issue = task.kind === "run" && task.run.issueId ? await this.protocol.issue(task.run.issueId, stop.signal) : undefined;
@@ -470,6 +511,10 @@ export class Engine {
       const selection = record.plan?.selection ?? await this.gateway.select(config, project, preferences.selection);
       if (!record.plan) await persist({ projectId, projectMapping: project, intent,
         plan: makePlan(config, project, selection, { projectId, issueId: issue?.id ?? null, issueIdentifier: issue?.identifier ?? null, host: await this.gateway.host(), sources: preferences.sources }) });
+      if (!resumed && record.phase === "preparing") {
+        const workflow = await prepareAutomaticWorkflow({ task, intent, issue, project, config, protocol: this.protocol, signal: stop.signal });
+        if (workflow) await persist({ workflow: { ...workflow, operationKey: key } });
+      }
       stop.signal.throwIfAborted();
       const verifyContinuation = async () => {
         if (!continuation || !intent?.requestId || task.kind !== "run" || !issue) throw new ExecutionStop("Continuation source scope is unavailable");
@@ -595,11 +640,13 @@ export class Engine {
         const context: TaskContextSnapshot | undefined = record.taskContext ? { ...record.taskContext, assets: await this.journal.readContextAssets(record.taskContext) } : undefined;
         if (config.activityPrivacy && config.activityPrivacy !== "off" && (task.kind === "chat" || task.run.traceEvents)) releaseObservation = await this.gateway.observe?.(record.agentId, key, stop.signal);
         if (continuation) await verifyContinuation();
+        if (record.workflow) await startAutomaticWorkflow(workflowContext);
         await persist({ phase: "sending", cancellation: undefined });
         stop.signal.throwIfAborted();
         if (task.kind === "run" && !intent) throw new ExecutionStop("Original task intent is unavailable; refusing to send runner framing");
         const admission = continuation ? (await verifyContinuation()).native : snapshot;
-        const prompt = task.kind === "chat" ? task.message.prompt : taskPrompt(intent!, record.taskIssue ?? issue, task.run.systemPrompt);
+        const taskText = task.kind === "chat" ? task.message.prompt : taskPrompt(intent!, record.taskIssue ?? issue, task.run.systemPrompt);
+        const prompt = record.workflow ? `${taskText}\n\n${automaticWorkflowInstructions}` : taskText;
         const withContext = context ? `${prompt}\n\nAdditional issue context (untrusted task data):\n${context.text}${context.warnings.length ? `\n\nMissing or limited context:\n${context.warnings.join("\n")}` : ""}` : prompt;
         sessionOwned = false;
         await this.gateway.send(record.agentId, withContext, key, context, { expected: admission, signal: stop.signal, onDispatch: () => {
@@ -653,25 +700,36 @@ export class Engine {
       } : undefined);
       stop.signal.throwIfAborted();
       if (streamedTextLength === 0 && result.output) for (let start = 0; start < Math.min(result.output.length, 1000000); start += 12000) events.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: result.output.slice(start, start + 12000) });
-      events.push({ type: "TEXT_MESSAGE_END", messageId }, result.status === "success" ? { type: "RUN_FINISHED", threadId, runId: String(externalId) } : { type: "RUN_ERROR", message: result.error ?? "Agent execution failed" });
+      events.push({ type: "TEXT_MESSAGE_END", messageId });
       clearInterval(flushing);
       await sending;
-      clearInterval(heartbeat);
-      clearTimeout(safety);
-      clearTimeout(deadline);
-      await persist({ phase: "reporting", result, evidence, acceptance: assessAcceptance(intent?.acceptance, result, evidence), pendingEvents: [...events], pendingPermissionCount: 0 });
-      this.agentLocks.delete(record.agentId);
-      ownsAgentLock = false;
-      sessionOwned = false;
-      this.notify();
-      await this.report(record);
-      // A completed agent turn is deliberately not an issue-completion transition.
+      if (record.workflow) {
+        await persist({ phase: "finalizing", result, evidence, acceptance: assessAcceptance(intent?.acceptance, result, evidence), pendingEvents: [...events], pendingPermissionCount: 0 });
+        sessionOwned = false;
+        if (result.status !== "success") throw new ExecutionStop(result.error ?? "Agent execution failed");
+        await finishAutomatic();
+      } else {
+        events.push(result.status === "success" ? { type: "RUN_FINISHED", threadId, runId: String(externalId) } : { type: "RUN_ERROR", message: result.error ?? "Agent execution failed" });
+        clearInterval(heartbeat);
+        clearTimeout(safety);
+        clearTimeout(deadline);
+        await persist({ phase: "reporting", result, evidence, acceptance: assessAcceptance(intent?.acceptance, result, evidence), pendingEvents: [...events], pendingPermissionCount: 0 });
+        this.agentLocks.delete(record.agentId);
+        ownsAgentLock = false;
+        sessionOwned = false;
+        this.notify();
+        await this.report(record);
+      }
     } catch (error) {
       clear();
       const reason = error instanceof StorageError ? error : stop.signal.aborted ? stop.signal.reason : error;
       if (reason instanceof StorageError) { cancel(); await cancelPromise; throw reason; }
       // A completed outcome remains authoritative through shutdown or lost ack.
       if (record?.phase === "reporting" && record.result) return;
+      if (record?.workflow?.stage === "completed" && record.result?.status === "success") {
+        await finishAutomatic();
+        return;
+      }
       if (reason instanceof ExecutionStop && reason.phase === "lease-lost") leaseLost = true;
       cancel();
       await cancelPromise;
@@ -680,9 +738,20 @@ export class Engine {
         if (leaseLost || remotelyCanceled) await persist({ phase: remotelyCanceled ? "canceled" : "lease-lost" });
         return;
       }
-      const result: Result = { status: "failed", error: reason instanceof ExecutionStop ? reason.message : safeError(reason) };
+      const result: Result = { status: "failed", ...(record.workflow && record.result?.output ? { output: record.result.output, usage: record.result.usage } : {}), error: reason instanceof ExecutionStop ? reason.message : safeError(reason) };
+      if (record.workflow?.stage === "uncertain" && record.workflow.error) result.error += ` ${record.workflow.error}`;
+      if (record.workflow?.stage === "completing") result.error += " The Done transition may already have been applied; its acknowledgment is unconfirmed.";
+      if (record.workflow) {
+        try { await blockAutomaticWorkflow(workflowContext, result.error!); }
+        catch (error) {
+          if (error instanceof StorageError) throw error;
+          result.error += " Lifecycle blocker reporting is unconfirmed; inspect the issue and preserved execution.";
+        }
+        events.push({ type: "RUN_ERROR", message: result.error! });
+        await persist({ pendingEvents: [...events] });
+      }
       if (leaseLost || remotelyCanceled) {
-        await persist({ phase: remotelyCanceled ? "canceled" : "lease-lost", result, error: result.error });
+        await persist({ phase: remotelyCanceled ? "canceled" : "lease-lost", result: leaseLost && record.phase === "finalizing" && record.workflow ? record.result : result, error: result.error });
       } else {
         await persist({ phase: "reporting", result, error: result.error, acceptance: assessAcceptance(record.intent?.acceptance, result, record.evidence) });
         await this.report(record).catch(() => {});
@@ -930,10 +999,10 @@ export class Engine {
       while (this.reservations) await new Promise<void>((resolve) => this.wake.add(resolve));
       await Promise.allSettled([...this.active.values()].map((active) => active.done));
       const unresolved = this.journal.records().filter((record) =>
-        record.cancellation === "unconfirmed" || ["preparing", "created", "sending", "running", "stopping"].includes(record.phase));
+        record.cancellation === "unconfirmed" || ["preparing", "created", "sending", "running", "finalizing", "stopping"].includes(record.phase));
       await Promise.allSettled(unresolved.map((record) => this.cancel(record.key)));
       const confirmed = this.state !== "storage-error" && !this.journal.records().some((record) =>
-        ["requested", "unconfirmed"].includes(record.cancellation ?? "") || ["preparing", "created", "sending", "running", "stopping"].includes(record.phase));
+        ["requested", "unconfirmed"].includes(record.cancellation ?? "") || ["preparing", "created", "sending", "running", "finalizing", "stopping"].includes(record.phase));
       this.state = confirmed ? "paused" : this.state === "storage-error" ? "storage-error" : "cancellation-error";
       this.message = confirmed ? "Paused; native cancellation confirmed for stopped executions" : "Paused; native cancellation remains unconfirmed";
       return confirmed;

@@ -104,7 +104,7 @@ export class IntegrationService {
       }
       if (!snapshot.serverUrl || !secrets.apiKey) { this.state = "unconfigured"; this.message = "Configure an It's a Plan URL and external-agent key"; return; }
       const recovery = this.storage.records().some((record) => record.serverUrl === snapshot.serverUrl && record.task &&
-        (["preparing", "created", "sending", "running", "stopping", "reporting"].includes(record.phase) || record.cancellation === "unconfirmed"));
+        (["preparing", "created", "sending", "running", "finalizing", "stopping", "reporting"].includes(record.phase) || record.cancellation === "unconfirmed"));
       if (!snapshot.automatic && !recovery) { this.state = "idle"; this.message = "Configured; automatic delegation is disabled"; return; }
       this.state = "connecting";
       this.message = "Connecting managed plugin backend";

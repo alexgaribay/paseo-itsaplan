@@ -35,7 +35,7 @@ Configuration remains a draft until **Save changes**. Category navigation preser
 
 ### Connection
 
-1. Create an **external** agent in It's a Plan. Give its bot account access to the relevant projects and permissions to read issues/projects. Grant comment/issue-edit permissions only if using milestone transitions. One team-level external-agent key can cover every authorized project; no per-project agent is required.
+1. Create an **external** agent in It's a Plan. Give its bot account access to the relevant projects and permissions to read issues/projects, edit issues and post comments for the automatic lifecycle. One team-level external-agent key can cover every authorized project; no per-project agent is required.
 2. Enter **Connection → API server URL** for the backend used by Paseo, and **Web app URL** for browser issue links. The API must be reachable from the Paseo daemon; the website must be reachable from your browser/device. HTTPS is required except for loopback HTTP. URLs must not contain credentials, query strings or fragments.
 3. Open **External agents** and use **External-agent execution API key → Add** (or **Replace**) on that agent's card, then **Save credential**. Use the existing default entry for the first agent; **Add agent** registers another connection. Save a new entry before adding its key. Do **not** use a personal API key or MCP token: those may authenticate as a regular account but cannot act as the external execution identity. The execution key uses **`x-api-key`**; MCP uses a separate credential.
 4. **Paseo host connection** defaults to **Automatic (this host)**. The plugin reads the running daemon's endpoint and identity from its private runtime metadata and authenticates with its private local credential. No WebSocket URL or Paseo password is needed. Open **Configure** to inspect the detected host or **Test connection** without claiming work. **Manual override** is only for another transport to the same daemon, such as a WSS proxy; it uses the separately stored Paseo password, never the local credential. Both modes verify the owning daemon's ID on connection and reconnect. Legacy custom URLs remain manual overrides; the old loopback defaults become automatic unless a mode was explicitly saved.
@@ -96,6 +96,7 @@ Representative non-secret settings excerpt (other fields retain defaults):
   "paseoConnectionMode": "auto",
   "automatic": true,
   "defaultProvider": "omp",
+  "workflow": { "mode": "automatic", "targetBranch": "main", "remote": "origin" },
   "projects": {
     "101": {
       "repository": "",
@@ -109,7 +110,8 @@ Representative non-secret settings excerpt (other fields retain defaults):
       "repository": "/srv/projects/lumen",
       "provider": "codex",
       "automatic": true,
-      "worktree": false
+      "worktree": false,
+      "workflow": { "mode": "review" }
     }
   }
 }
@@ -135,9 +137,30 @@ Choose **Configure** under **Field-based agent selection** to map a stable **pro
 - Typed issue lookup, manual-start and attachment RPCs remain available for programmatic integrations, without a duplicate issue-management UI. Attachment does not send a prompt. An attached session must belong to the configured checkout or a previously validated worktree for that project.
 - Open **History** or **Needs attention**, then select an execution. **Open agent** uses Paseo navigation; conversation history remains in Paseo. Provider/model/mode, approvals, cancellation, output/error, plans and technical details are available inside the selected execution rather than on the landing screen. Result delivery, acceptance, and observed milestones are separate; an upstream `success` is not proof of implementation, tests, a PR, or issue completion.
 - **Compare and review** compares the selected attempt with current upstream outcome, native activity/archive state, result delivery and acceptance. **Mark reviewed** requires a matching terminal attempt, the authenticated external polling agent's numeric ID, and a positively idle/archived native session. Missing agent metadata or mismatched identity/kind blocks acknowledgment; stale observations must be refreshed. It records a timestamp only: it never changes execution phase, acknowledges a lost result receipt, clears cancellation fences, or completes the issue. Reviewed discrepancies retain their evidence and display a review acknowledgment.
-- A completed coding turn is **not** issue completion. Milestones are distinct: `turn-completed`, `implementation-completed`, `tests-passed`, `pull-request-created`, `ready-for-review`, `issue-completed`.
-- No issue transition runs automatically. Configure destination column IDs, then explicitly submit a milestone with observed evidence from the session UI. A project policy overrides the global policy for that milestone. Blank project fields inherit global policies; blank global fields disable transitions. Use columns belonging to the issue's project.
-- Milestone submission posts an evidence comment, then updates `columnId`. These are separate upstream operations, not a transaction: if updating the column fails, the comment can already exist. A retry can create another comment. A model assertion is not independent proof of tests, a PR, or review.
+- A completed coding turn alone is **not** issue completion. Automatic delegation follows the checked lifecycle below; review mode retains explicit evidence-based milestones: `turn-completed`, `implementation-completed`, `tests-passed`, `pull-request-created`, `ready-for-review`, `issue-completed`.
+- For explicit milestones, configure destination column IDs and submit observed evidence from the selected execution. A project policy overrides the global policy; blank project fields inherit and blank global fields disable these manual transitions. This policy is separate from automatic lifecycle columns.
+- Manual milestone submission posts an evidence comment, then updates `columnId`. These are separate upstream operations, not a transaction: a failed column update can leave the comment, and retrying can duplicate it. A model assertion is not independent proof of tests, a PR or review.
+
+### Automatic delegation lifecycle
+
+**This policy belongs only to this plugin.** It does not change Paseo's global agent defaults, other plugins, ordinary sessions, chats, manual issue starts or scheduled runs. New, unrestricted, directly delegated issue implementations default to:
+
+1. Resolve the issue, assigned external agent, repository, isolated task worktree and project columns. Capture the Git destination before coding; do not retarget an in-flight execution when settings change.
+2. Move the issue to **In Progress** immediately before dispatching the coding prompt to the ready native session—not merely when a queue claim arrives.
+3. Require a successful coding turn and an explicit completed outcome. Blocked, partial or failed outcomes cannot publish.
+4. Preserve task-owned commits, commit remaining task changes, and run real verification against that commit. Integrate onto the fetched target in a separate temporary worktree and verify the combined commit again.
+5. Push only the configured target branch to the captured remote, without force, tag/submodule publication or hook/signing bypass. Confirm the remote contains the integrated commit and fast-forward the clean local target checkout without discarding newer work.
+6. Post the bot-owned integration/check receipt and move the issue to **Done**. Only then report automatic completion. A lost status acknowledgment is reconciled from the issue; unavailable evidence remains explicitly uncertain, never blindly repeated.
+
+Configure **Settings → Execution → Automatic lifecycle**. Defaults are **Automatic**, target **main**, remote **origin**. Choose **Review** to opt out of automatic Git/status completion while retaining normal task execution and explicit milestones. Project editors can inherit or override the whole workflow policy, including check commands and exceptional In Progress/Done column IDs. Standard names or an unambiguous started/completed column are discovered through the existing project API; ambiguous columns require an override.
+
+Automatic publication requires an isolated worktree, a clean fully tracked source checkout on the target branch, matching fetch/push destinations, compatible local/remote history, normal Git credentials and successful checks. Conflicts, dirty/unrelated work, changed assignment/requirements/native settings, pending approvals, missing tools and rejected pushes block completion. Work and task commits remain available; the issue is not marked Done on an unverified failure. If Git publication succeeded but the Done update was denied, the published commit is preserved and the status failure is reported.
+
+Verification commands are **JSON argv arrays**, for example `["bun","test"]`, not shell strings. Explicit commands run from the repository root. Without overrides, the plugin discovers tracked JavaScript package `test`/`build` scripts, Swift package tests/builds, or a single Xcode project/workspace with one shared scheme and an unambiguous platform. iOS tests select an available iPad simulator. Ambiguous or unsupported layouts need explicit checks. Dependencies, toolchains and simulator runtimes must already be prepared; the plugin does not install them.
+
+Repository checks execute on the daemon host under the plugin's configured automatic policy; they are not sandboxed by the coding provider's permission mode. Existing hooks, signing and remote protection still apply. The plugin never approves a Paseo permission request or creates/merges a forge PR to bypass branch protection.
+
+Smoke, exact-output, no-tools, no-posting, no-Git and unchanged-status restrictions do not enroll in this lifecycle. Previously captured executions retain their policy; legacy in-flight records are not retroactively enrolled. Durable finalization can resume after interruption without replaying a completed coding turn. This adds no dependency scheduler, server endpoint or upstream server change.
 
 ### Smoke checks and reruns
 
@@ -172,7 +195,7 @@ Automatic issue execution and programmatic manual issue starts share a per-task 
 - Use existing, authorized issue-comment tools when available and permitted, with normal Paseo permissions. Do not obtain credentials or create a reporting connection. If posting is unavailable, forbidden or unconfirmed, retain the findings in the conversation/final report and disclose that delivery state; do not blindly repost.
 - Finish with **Outcome**, **Changes**, **Validation**, **Decisions and Discoveries**, **Remaining Work**, and **References**. Identify untested paths and unverified assumptions; include only real checks, approvals and references. Outcome labels are report text, not new execution API statuses.
 
-The execution API stores the final answer as a run result, **not an automatic completion comment**. From a selected execution, **Review ticket report** separately verifies the original task's permission to post, previews the exact structured comment and requires explicit human attestation. Optional user-reviewed notes are not verified model/test evidence. The plugin never mines transcripts for approval, automatically posts a report, changes issue status or edits original requirements.
+The execution API stores the final answer as a run result. Automatic lifecycle adds its own narrowly scoped integration/check receipt; it does not automatically publish the full structured report. From a selected execution, **Review ticket report** separately verifies permission to post, previews the exact structured comment and requires explicit human attestation. Optional user-reviewed notes are not verified model/test evidence. This separate report action never changes issue status or edits original requirements.
 
 Report delivery uses the bot's existing REST API permissions, not agent MCP or the separate human rerun credential. A durable fence precedes every approved write. One per-run marker and exact actor/body checks reconcile lost acknowledgments; unknown delivery cannot be blindly retried. Later approved edits update only the exact known bot-owned comment, after a complete authoritative feed proves it was not changed. Partial, missing, inaccessible or ambiguous feeds preserve uncertainty. Keep source credentials and private context out of notes.
 
@@ -182,13 +205,13 @@ This is an instruction-level convention, not a provider-independent enforcement 
 
 Worktrees are enabled by default per mapped project. New work uses native `PaseoApi.workspaces.create` with a worktree branch-off source, an explicit branch name and the configured base branch or native repository default. Canonical identifiers lead new names, e.g. `TW-42-itsaplan-<stable-hash>`, so It's a Plan's forge matcher recognizes them. Explicit workspace creation avoids the SDK's slug case/slash normalization. Stable agent/workspace recovery prevents duplicate creation; existing `itsaplan-<hash>` branches and worktrees are preserved rather than renamed.
 
-Workspace/session/journal associations retain the issue and checkout. Follow-up chat uses its original session/worktree. Worktrees, commits and conversations are **never automatically deleted or archived** by this plugin. Inspect dirty state and use Paseo's existing workspace cleanup flow. Keep worktrees until review/follow-up is finished.
+Workspace/session/journal associations retain the issue and checkout. Follow-up chat uses its original session/worktree. Native task worktrees, commits and conversations are **never automatically deleted or archived** by this plugin. Temporary integration worktrees are removed after use. Inspect task dirty state and use Paseo's existing workspace cleanup flow; retain task worktrees until review/follow-up is finished.
 
-Gitea remotes and Git credentials belong to the mapped repository and Paseo/provider environment. There is no separate Gitea client, automatic push, protected-branch push or PR merge in this plugin. Normal agent tool access remains governed by Paseo permissions; the plugin is not a Git policy enforcement sandbox.
+Gitea remotes and Git credentials belong to the mapped repository and daemon environment. Automatic lifecycle uses ordinary Git for its configured target push; no separate Gitea client, force push, forge PR creation or PR merge is introduced. Normal coding-agent tools remain governed by Paseo permissions; the plugin is not a Git policy enforcement sandbox.
 
-When a task actually calls for a PR, native task guidance recommends a **nonclosing** `Refs TW-42` reference. It never requests a PR merely for linking, uses `Fixes`/`Closes` by default, pushes, merges or infers completion from a turn. **Execution details → Task context and development** reads current issue-linked development records and distinguishes unavailable access from an empty result. Captured context is historical; links and forge state do not prove tests passed.
+When a task actually calls for a PR, native task guidance recommends a **nonclosing** `Refs TW-42` reference and never requests a PR merely for linking or uses `Fixes`/`Closes` by default. The plugin owns automatic integration; the coding agent must not independently duplicate its merge/push/report. **Execution details → Task context and development** reads current issue-linked development records and distinguishes unavailable access from an empty result. Captured context, links and forge state do not prove tests passed.
 
-Upstream currently labels run session links as `codex://threads/...`, so this plugin intentionally omits run `sessionId` instead of mislabeling a Paseo agent. Native **Open agent** navigation remains provider-neutral. Gitea/Forgejo can parse GitHub-shaped check-run events, but managed hooks do not request those events; outbound PR operations are restricted upstream to GitHub/GitLab. Those gaps are tracked in [PIAP-1](https://plan.alexgaribay.com/issue/2). No upstream repository, forge hook or CI state is modified by this plugin.
+Upstream currently labels run session links as `codex://threads/...`, so this plugin intentionally omits run `sessionId` instead of mislabeling a Paseo agent. Native **Open agent** navigation remains provider-neutral. Gitea/Forgejo can parse GitHub-shaped check-run events, but managed hooks do not request those events; outbound PR operations are restricted upstream to GitHub/GitLab. Those gaps are tracked in [PIAP-1](https://plan.alexgaribay.com/issue/2). Installing this plugin changes no It's a Plan server code, forge-hook configuration or CI configuration.
 
 ### Scheduled tasks and activity privacy
 
@@ -224,6 +247,7 @@ It's a Plan external-agent API
 - `server/host.ts`: owning-daemon discovery, private local authentication, explicit transport overrides and connection/reconnection identity fences.
 - `server/projects.ts`, `server/repository-matching.ts`, `server/git.ts`: project-scoped metadata discovery, registered-checkout matching and read-only Git validation.
 - `server/task.ts`, `server/plan.ts`: structured task intent, narrow native delivery instructions, selection provenance and separate acceptance evidence.
+- `server/workflow.ts`, `server/git-workflow.ts`: plugin-scoped issue transitions, task outcome admission, durable check/commit/publication receipts and serialized Git integration.
 - `server/experience.ts`, `server/rerun.ts`, `server/diagnostics.ts`: non-claiming readiness/queue/plan inspection, fenced human requests and structurally redacted diagnostics.
 
 **Why one owned SDK connection exists:** Paseo 0.13's `PluginServerContext` has no `paseo` API at startup, its public agent handle has no cancellation method, and public `PaseoApi.agents.create` requires an explicit `provider/model` string. RPC handlers use their supplied `PaseoApi`; unattended startup, cancellation, and creation without a model override use a small in-process SDK adapter. Explicit-model creation remains on the supplied public API. Automatic execution reuses its owned connection; an interactive native-default creation opens and closes a scoped owning-daemon connection when necessary. `server/host.ts` and `server/paseo.ts` isolate these details. No second process or independently managed service is started. The SDK is pinned and the compatibility range deliberately conservative.

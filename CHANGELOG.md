@@ -2,6 +2,8 @@
 
 ## 0.0.1
 
+- Default new unrestricted issue delegations to a plugin-only automatic lifecycle: ready native pickup → In Progress → verified task commit → verified integration and ordinary target-branch push → bot-owned receipt → Done. Leave failures unfinished and preserve work; reconcile uncertain acknowledgments without blindly replaying writes.
+- Add global/project automatic-or-review policies, target/remote/check configuration, column discovery and durable finalization receipts. Preserve native permissions, hooks, signing, branch protection, existing task restrictions and captured recovery scope; do not change Paseo-wide defaults or require an upstream server change.
 - Select repository overrides from all projects registered on the owning Paseo host, including projects without workspaces. Preserve custom paths and workspace overrides, label non-Git choices and keep automatic matching as the default. Preserve selected-bot context inside compact project-editor sheets.
 - Make It's a Plan external-agent connections first-class: open **Manage agents** from activity, add connections at the top of the editor, and configure each execution key directly on its owning card. Keep Paseo profile attachment optional, name credential editors after their owning agent, and remove the selected-bot/Connection credential setup detour.
 - Make project execution opt-out: newly authorized and unsaved projects inherit execution defaults and automatic repository matching without per-project enablement. Preserve explicit project opt-outs, global/bot controls, repository safety checks and pinned recovery/chat routing. Align readiness, request delivery and settings with the enabled default.
@@ -13,7 +15,7 @@
 - Document captured-image retention explicitly: content-addressed deduplication and per-snapshot limits do not impose a global disk quota or automatic expiry. Preserve historical recovery inputs and delivery fences.
 - Add project/issue-type/select-option provider and model bindings, below explicit and saved issue overrides. Stale, conflicting or unavailable selections fail before dispatch; fields cannot select repositories or permission modes.
 - Add normalized SDK tool activity with off/metadata/full privacy, known-credential redaction, reconnect deduplication and text cursors.
-- Use canonical issue identifiers at the start of new native worktree branches, preserving existing worktrees. Add conditional nonclosing PR-reference guidance and selected-execution development links; no automatic pushes, PR creation, merges or completion transitions.
+- Use canonical issue identifiers at the start of new native worktree branches, preserving existing worktrees. Add conditional nonclosing PR-reference guidance and selected-execution development links; forge PR creation/merge remains outside the plugin's automatic Git lifecycle.
 - Add explicitly attested continuation through durable human/browser requests, with fresh sessions by default, original-scope/native/lease checks and a post-refresh configuration/credential admission fence. Bind privacy, execution safety limits and worktree association; changed policy cannot reuse an old approval.
 - Add exact, explicitly approved per-run ticket-report previews and owned-comment updates without MCP. Fence before writes and reconcile complete actor/body/marker evidence after lost acknowledgments; ambiguous delivery never blindly reposts.
 - Keep optional context/field controls in project editors, activity/continuation controls in Advanced, and reporting/development in selected execution details. Preserve the minimal activity landing page and web-based issue management.
@@ -57,7 +59,7 @@
 - In-process adaptation of It's a Plan runner 0.7.0 claims, run/chat heartbeats, results and text events; shared capacity, fail-closed leases, authentication pause and transient reconnect.
 - Multi-project issue resolution by stable IDs, configured checkout/workspace validation, dynamic provider/model/mode selection, native isolated worktrees and deterministic creation keys.
 - Durable run-attempt/session/thread associations, atomic recovered-outcome transfer, conservative ambiguous-send handling and result-only retry.
-- Initial/follow-up chat resumption and cancellation; manual issue start/attachment; evidence-gated global and per-project milestone policies, without automatic issue completion.
+- Initial/follow-up chat resumption and cancellation; manual issue start/attachment; explicit evidence-gated global and per-project milestones alongside the separate automatic delegation lifecycle.
 - Write-only credentials in restricted private storage, serialized updates, nonce-safe backend locking, validated URLs, request deadlines and separately credentialed optional MCP.
 - Explicit reload/disable policy: cancel claimed run/chat turns, preserve sessions/worktrees and completed outcomes, reconcile pending delivery. Unclaimed manual sessions continue in Paseo; missed outcomes are reconciled from native state without inferring success.
 - Automated protocol/runtime/storage tests and local real-server acceptance. See VERIFICATION.md for provider availability and untested surfaces; no claim of live Codex/Claude validation.
