@@ -14,7 +14,7 @@ import { BackLink, NavigationRow } from "./navigation";
 import { DelegationTestSetup } from "./smoke";
 import { BotsEditor, BotSelector } from "./bots";
 
-export function SettingsScreen(props: PluginSurfaceProps & { openExecutions(botId: string): void }) {
+export function SettingsScreen({ initialDetail, ...props }: PluginSurfaceProps & { openExecutions(botId: string): void; initialDetail?: "agents" }) {
   const settings = useSettings(preferences);
   const action = useAction();
   const [selectedBotId, setSelectedBotId] = useState("default");
@@ -27,19 +27,19 @@ export function SettingsScreen(props: PluginSurfaceProps & { openExecutions(botI
     <Feedback theme={props.theme} error={settings.error || settings.saveError || action.error} />
   </SettingsSection>;
   const botId = settings.values.bots[selectedBotId] ? selectedBotId : "default";
-  return <BotScope botId={botId}><SettingsEditor key={botId} {...props} settings={settings} botId={botId} onSelectBot={setSelectedBotId} /></BotScope>;
+  return <BotScope botId={botId}><SettingsEditor key={botId} {...props} initialDetail={initialDetail} settings={settings} botId={botId} onSelectBot={setSelectedBotId} /></BotScope>;
 }
 
 type ReadySettings = Extract<SettingsState<typeof configSchema>, { status: "ready" }>;
-type Detail = "connection" | "execution" | "projects" | "requests" | "advanced" | "checks" | "bots";
+type Detail = "connection" | "execution" | "projects" | "requests" | "advanced" | "checks" | "agents";
 const panels = ["runtime", "polling", "chat", "overrides", "policies", "mcp"] as const;
 
-function SettingsEditor({ settings, openExecutions, botId, onSelectBot, ...props }: PluginSurfaceProps & { settings: ReadySettings; openExecutions(botId: string): void; botId: string; onSelectBot(botId: string): void }) {
+function SettingsEditor({ settings, openExecutions, botId, onSelectBot, initialDetail, ...props }: PluginSurfaceProps & { settings: ReadySettings; openExecutions(botId: string): void; botId: string; onSelectBot(botId: string): void; initialDetail?: "agents" }) {
   const [draft, setDraft] = useState<{ values: Config; revision: string }>({ values: settings.values, revision: settings.revision });
   const [formVersion, setFormVersion] = useState(0);
   const [savedRevision, setSavedRevision] = useState<string | null>(null);
   const [panel, setPanel] = useState<AdvancedPanel | null>(null);
-  const [detail, setDetail] = useState<Detail | null>(null);
+  const [detail, setDetail] = useState<Detail | null>(initialDetail ?? null);
   const [projectId, setProjectId] = useState<string>();
   const [readiness, setReadiness] = useState<{ revision: string; value: Readiness }>();
   const [testOpen, setTestOpen] = useState(false);
@@ -88,11 +88,11 @@ function SettingsEditor({ settings, openExecutions, botId, onSelectBot, ...props
   if (panel) return <AdvancedEditor key={`${panel}-${formVersion}`} {...props} panel={panel} config={values} projects={availableProjects.data || []} providers={catalog.data || []} disabled={disabled} onClose={() => setPanel(null)} onApply={(next) => { setDraft((current) => ({ ...current, values: next })); setPanel(null); }} />;
   if (testOpen) return <DelegationTestSetup {...props} config={settings.values} draftDirty={dirty || conflict || disabled} onClose={() => setTestOpen(false)} onChange={() => setReadiness(undefined)} />;
   return <>
-    <BotSelector bots={settings.values.bots} botId={botId} disabled={dirty || conflict || disabled} onChange={onSelectBot} />
+    {detail !== "agents" && <BotSelector bots={settings.values.bots} botId={botId} disabled={dirty || conflict || disabled} onChange={onSelectBot} onManage={() => setDetail("agents")} />}
     {!detail && <SettingsSection title="Settings">
       <SettingsCard>
         <NavigationRow theme={props.theme} label="Connection" hint={values.serverUrl || "Not configured"} onPress={() => setDetail("connection")} />
-        <NavigationRow theme={props.theme} label="Bots and profiles" hint={`${Object.keys(values.bots).length} registered · ${values.bots[botId]?.name || botId}`} onPress={() => setDetail("bots")} />
+        <NavigationRow theme={props.theme} label="External agents" hint={`${Object.keys(values.bots).length} configured`} onPress={() => setDetail("agents")} />
         <NavigationRow theme={props.theme} label="Projects" hint={`${Object.keys(values.projects).length} with saved overrides · others default to enabled`} onPress={() => { setProjectId(undefined); setDetail("projects"); }} />
         <NavigationRow theme={props.theme} label="Execution" hint={values.automatic ? "Automatic delegation enabled" : "Automatic delegation disabled"} onPress={() => setDetail("execution")} />
         <NavigationRow theme={props.theme} label="Advanced" onPress={() => setDetail("advanced")} />
@@ -101,11 +101,11 @@ function SettingsEditor({ settings, openExecutions, botId, onSelectBot, ...props
     {!detail && <SettingsSection title="Review">
       <SettingsCard>
         <NavigationRow theme={props.theme} label="Setup checks" hint="Readiness, queue preview and test delegation" onPress={() => setDetail("checks")} />
-        <NavigationRow theme={props.theme} label="Executions" hint={dirty || conflict ? "Save or discard changes before leaving settings" : "Selected bot's active work, history and runtime controls"} disabled={dirty || conflict || disabled} onPress={() => openExecutions(botId)} />
+        <NavigationRow theme={props.theme} label="Executions" hint={dirty || conflict ? "Save or discard changes before leaving settings" : "Selected agent's active work, history and runtime controls"} disabled={dirty || conflict || disabled} onPress={() => openExecutions(botId)} />
       </SettingsCard>
     </SettingsSection>}
     {detail && <BackLink theme={props.theme} label={detail === "requests" ? "Advanced" : "Settings"} onPress={() => setDetail(detail === "requests" ? "advanced" : null)} />}
-    {detail === "bots" && <BotsEditor key={formVersion} {...props} bots={values.bots} disabled={disabled} onChange={(bots) => set({ bots })} />}
+    {detail === "agents" && <BotsEditor key={formVersion} {...props} bots={values.bots} savedBots={settings.values.bots} disabled={disabled} onChange={(bots) => set({ bots })} />}
     {detail === "checks" && <ReadinessPanel key={settings.revision} {...props} onNavigate={navigate} onResult={(value) => setReadiness({ revision: settings.revision, value })} draftDirty={dirty || conflict || disabled} onTestDelegation={() => setTestOpen(true)} />}
     {detail === "advanced" && <SettingsSection title="Advanced">
       <SettingsCard>
@@ -113,24 +113,24 @@ function SettingsEditor({ settings, openExecutions, botId, onSelectBot, ...props
         <NavigationRow theme={props.theme} label="Human rerun requests" hint="Optional separate human credential" onPress={() => setDetail("requests")} />
       </SettingsCard>
     </SettingsSection>}
-    {detail === "connection" && <SettingsSection title="Connection" info={`API and web URLs are shared by every bot. The execution key belongs only to ${settings.values.bots[botId]?.name || botId}. Credentials are stored immediately, separately from this draft.`}>
+    {detail === "connection" && <SettingsSection title="Connection" info="API and web URLs are shared by every external agent connected to this host. Configure each agent's execution key in External agents.">
       <SettingsCard key={`connection-${formVersion}`}>
         <SettingsInput label="API server URL" placeholder="https://api.plan.example.com" initialValue={values.serverUrl} disabled={disabled} onChangeText={(serverUrl) => set({ serverUrl })} />
         <SettingsInput label="Web app URL" placeholder="Same as API server" initialValue={values.webUrl} disabled={disabled} onChangeText={(webUrl) => set({ webUrl })} />
-        <CredentialField {...props} kind="apiKey" disabled={disabled} />
+        <NavigationRow theme={props.theme} label="External agents" hint="Execution API keys and optional Paseo profiles" onPress={() => setDetail("agents")} />
         <NavigationRow theme={props.theme} label="Paseo host connection" hint={values.paseoConnectionMode === "auto" ? "Automatic · This host" : values.paseoUrl} disabled={disabled} onPress={() => setPanel("host")} />
       </SettingsCard>
     </SettingsSection>}
     {detail === "execution" && <>
-      <SettingsSection title="Delegation" info="Shared settings affect future work for all enabled bots. Existing work keeps its captured settings. Connection and runner credential changes drain active work before replacement.">
+      <SettingsSection title="Delegation" info="Shared settings affect future work for all enabled external agents. Existing work keeps its captured settings. Connection and runner credential changes drain active work before replacement.">
         <SettingsCard>
           <SettingsSwitch label="Automatic delegation" hint="Global claims are unfiltered. Projects without overrides are enabled by default, and an explicit automatic-off does not exclude a project from claims. Runtime pause is separate from this saved switch." value={values.automatic} disabled={disabled} onValueChange={(automatic) => set({ automatic })} />
         </SettingsCard>
       </SettingsSection>
-      <SettingsSection title="Shared execution defaults" info="Used by bots without a named Paseo profile; issue and project overrides take precedence. A bot's named profile supplies the full launch bundle instead. Blank model or mode uses the provider default and remains unresolved until session creation. No-tools is instruction-only, not enforced isolation." trailing={<RefreshButton theme={props.theme} label="Refresh providers" disabled={disabled || catalog.loading} onPress={catalog.refresh} />}>
+      <SettingsSection title="Shared execution defaults" info="Used by external agents without a named Paseo profile; issue and project overrides take precedence. An attached profile supplies the full launch bundle instead. Blank model or mode uses the provider default and remains unresolved until session creation. No-tools is instruction-only, not enforced isolation." trailing={<RefreshButton theme={props.theme} label="Refresh providers" disabled={disabled || catalog.loading} onPress={catalog.refresh} />}>
         <SettingsCard key={`execution-${formVersion}`}>
           <SelectionFields value={{ provider: values.defaultProvider, model: values.defaultModel, modeId: values.defaultModeId }} onChange={(selection) => set({ defaultProvider: selection.provider, defaultModel: selection.model, defaultModeId: selection.modeId })} providers={catalog.data || []} disabled={disabled} global />
-          <SettingsInput label="Concurrent executions per bot" initialValue={String(values.maxConcurrent)} disabled={disabled} onChangeText={(text) => set({ maxConcurrent: text.trim() ? Number(text) : Number.NaN })} />
+          <SettingsInput label="Concurrent executions per external agent" initialValue={String(values.maxConcurrent)} disabled={disabled} onChangeText={(text) => set({ maxConcurrent: text.trim() ? Number(text) : Number.NaN })} />
           <SettingsInput label="Execution timeout (minutes)" initialValue={String(values.executionTimeoutMs / 60000)} disabled={disabled} onChangeText={(text) => set({ executionTimeoutMs: text.trim() ? Number(text) * 60000 : Number.NaN })} />
         </SettingsCard>
         <ProviderErrors providers={(catalog.data || []).filter((provider) => provider.id === values.defaultProvider)} />

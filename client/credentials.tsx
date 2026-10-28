@@ -10,8 +10,8 @@ const fields = {
   apiKey: {
     label: "External-agent execution API key",
     presence: "credentialPresent",
-    info: "This execution key belongs only to the selected bot. Create or select an external agent in It's a Plan and give it access to the shared projects Paseo should handle. Personal account keys and MCP tokens cannot execute tasks.",
-    hint: "Selected bot's external-agent key; not a personal API key or MCP token.",
+    info: "Connect this It's a Plan external agent using its own execution API key. Give that agent access to the projects Paseo should handle. Personal account keys and MCP tokens cannot execute tasks.",
+    hint: "This external agent's execution key; not a personal API key or MCP token.",
   },
   mcpToken: {
     label: "MCP token",
@@ -33,7 +33,7 @@ const fields = {
   },
 } as const;
 
-export function CredentialField({ kind, disabled = false, ...props }: PluginSurfaceProps & { kind: CredentialKind; disabled?: boolean }) {
+export function CredentialField({ kind, ownerName, disabled = false, ...props }: PluginSurfaceProps & { kind: CredentialKind; ownerName?: string; disabled?: boolean }) {
   const saveCredentials = useRpc(credentialsRpc);
   const status = useRpc(statusRpc);
   const load = useCallback(() => status({}), [status]);
@@ -62,7 +62,7 @@ export function CredentialField({ kind, disabled = false, ...props }: PluginSurf
   };
   return <>
     <SettingsAction label={field.label} hint={present === undefined ? "Checking credential…" : present ? "Stored" : "Not configured"} actionLabel={present ? "Replace" : "Add"} disabled={disabled || action.pending} onPress={() => { resource.refresh(); setOpen(true); }} />
-    <Modal title={field.label} open={open} onOpenChange={(next) => { if (!next && !action.pending) close(); }}>
+    <Modal title={kind === "apiKey" && ownerName ? `${ownerName} execution key` : field.label} open={open} onOpenChange={(next) => { if (!next && !action.pending) close(); }}>
       <Modal.Content>
         <SettingsSection title="Credential" info={`${field.info} Stored plaintext is never returned. Credentials save separately from the settings draft. Runner connection changes drain active work before replacement.`}>
           <SettingsCard>

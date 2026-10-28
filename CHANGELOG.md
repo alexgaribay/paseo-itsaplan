@@ -3,8 +3,9 @@
 ## 0.0.1
 
 - Select repository overrides from all projects registered on the owning Paseo host, including projects without workspaces. Preserve custom paths and workspace overrides, label non-Git choices and keep automatic matching as the default. Preserve selected-bot context inside compact project-editor sheets.
+- Make It's a Plan external-agent connections first-class: open **Manage agents** from activity, add connections at the top of the editor, and configure each execution key directly on its owning card. Keep Paseo profile attachment optional, name credential editors after their owning agent, and remove the selected-bot/Connection credential setup detour.
 - Make project execution opt-out: newly authorized and unsaved projects inherit execution defaults and automatic repository matching without per-project enablement. Preserve explicit project opt-outs, global/bot controls, repository safety checks and pinned recovery/chat routing. Align readiness, request delivery and settings with the enabled default.
-- Run multiple external bots on one Paseo host with shared connection/project/policy settings, separate execution keys, and named local Paseo agent-profile bindings.
+- Run multiple It's a Plan external agents on one Paseo host with shared connection/project/policy settings, separate execution keys, and optional named Paseo agent-profile bindings.
 - Add bot-scoped settings/execution selection and RPC inputs. Preserve legacy default-bot state, isolate private journals and pause controls, and reject duplicate execution keys and detected account collisions.
 - Apply complete named profile launch bundles, including thinking/features; capture them in plans without blending shared overrides. Missing profiles fail closed, and changed or unverifiable native settings block conversation reuse.
 - Namespace nondefault native creation/session keys by bot, including identical upstream task IDs. Retain disabled/retired bot state and pending delivery across restarts.

@@ -316,6 +316,24 @@ The implementation owner's loopback HTTP smoke reported successful default-enabl
 
 The package dry run reported `paseo-itsaplan@0.0.1` and included all 87 release files. No package archive was created by the dry run.
 
+## External-agent-first setup — 2026-10-28
+
+Both TypeScript configurations passed. The existing server/client suite passed **604 tests, 0 failures, 1982 assertions across 25 files**; no permanent UI-copy or forwarding tests were added.
+
+Ran the actual **Paseo 0.13.2** web UI and current plugin in a private disposable daemon home, bound to loopback with relay/MCP disabled. All configuration writes and disposable execution keys in this check belonged to that isolated host, not the user's running host or It's a Plan.
+
+- Clicked the plugin sidebar entry, then **Manage agents**. It opened the native external-agent settings screen directly, without selecting a bot or navigating through Connection.
+- Clicked **Add agent**, named the new connection, attached the discovered **UI Designer** profile, and saved. The new card appeared first; its credential action became available only after registration.
+- Kept a second connection on **Use shared execution settings**, saved different disposable keys through each card's own editor, and enabled the additional agent. The editors named their owning connections; saving one changed only that card's key-presence state.
+- Confirmed both cross-agent key substitutions were rejected. Reloaded the isolated plugin and observed unchanged saved values/revision, both key-presence flags, the attached profile and the independent unset profile. Both connections had zero sessions/active executions and were not claiming.
+- Inspected desktop **1440×1000, light** and compact **390×844, dark** screenshots. The compact document width remained **390 px**. Reopened and closed the compact native credential sheet; its new-key input was empty and password-typed. No browser page exceptions were observed.
+
+This verifies native UI registration, per-agent settings/credential routing and reload persistence using disposable keys. It does **not** verify live authentication for two It's a Plan accounts, queue consumption, provider/model execution, or native iOS/Android applications. No real external agent, assignment, comment, session or issue-status transition was created.
+
+Stopped the owned daemon gracefully, closed the owned browser tab, and removed the temporary home, disposable credentials and screenshots; all owned artifact paths were absent afterward.
+
+Reloaded the installed local plugin only after pausing new claims and verifying no active/reserved work, no pending configuration and a complete empty upstream queue. Saved settings/revision, credential-presence flags, all seven session associations and request history were unchanged. Restored the original runtime pause state. The final live check observed **connected, claiming true, paused false, zero active executions**, a complete empty queue, and the new **Manage agents**, **External agents** and optional-profile controls in the served client bundle. No additional real external-agent connection was registered by this verification.
+
 ## Registered Paseo project selector — 2026-10-28
 
 The plugin-only project selector and compact-editor context fix are merged into `main`. The repository-API protocol cutover and companion It's a Plan server change remain in their isolated worktrees; this merge adds no new server requirement.
@@ -325,3 +343,11 @@ The combined main source passed both TypeScript configurations and **604 tests, 
 Before merge, the actual Paseo 0.13.2 UI was exercised on an isolated loopback daemon with two registered Git projects and one non-Git project, all without workspaces. The dropdown listed all three. Git selection populated the repository override, Apply/Save survived browser reload, non-Git selection blocked Apply, and automatic matching cleared the checkout/workspace override in the draft. Desktop and 390×844 compact screenshots were inspected; compact Configure was reproduced failing before the selected-bot context fix and working afterward.
 
 No live plugin reload, installation command, task claim or production settings/credential write was performed for this merge. Existing external-agent setup edits were preserved outside the selector commits.
+
+## Local activation and publication
+
+Activated the updated plugin through its existing directory registration with `paseo plugin reload itsaplan`; no duplicate installation was created. Paused both agents and verified no active/reserved work or pending configuration before reloading. Saved settings, credential bytes and presence flags, session associations and request history were unchanged, including all 18 existing Dev bot sessions.
+
+Restored both agents' original unpaused states. Non-claiming authentication checks succeeded for **Dev bot** and **UI Bot**; both reported connected and accepting delegated work. The served client bundle contained the new project-selector controls. No dependency-ordering or companion server changes were installed.
+
+Final publication checks passed both TypeScript configurations and **604 tests, 0 failures, 1982 assertions across 25 files**.

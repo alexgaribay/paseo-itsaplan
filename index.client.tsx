@@ -9,14 +9,16 @@ function ActivityItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
 }
 
 export default function contribute(client: PluginClientContext) {
-  const Executions = (props: PluginScreenProps) => <ExecutionsScreen {...props} openScreen={(input) => client.openScreen(input)} openSettings={() => client.openSettings("connection")} />;
+  const Executions = (props: PluginScreenProps) => <ExecutionsScreen {...props} openScreen={(input) => client.openScreen(input)} openSettings={() => client.openSettings("connection")} openAgents={() => client.openSettings("agents")} />;
   const Settings = (props: PluginSurfaceProps) => <SettingsScreen {...props} openExecutions={(botId) => client.openScreen({ screenId: activityScreenId, params: { botId } })} />;
+  const Agents = (props: PluginSurfaceProps) => <SettingsScreen {...props} initialDetail="agents" openExecutions={(botId) => client.openScreen({ screenId: activityScreenId, params: { botId } })} />;
   const cleanup = [
     client.addSettingsScreen({ id: "connection", title: "It's a Plan", icon: "ListTodo", Component: Settings }),
+    client.addSettingsScreen({ id: "agents", title: "It's a Plan agents", icon: "Users", Component: Agents }),
     client.addScreen({ id: activityScreenId, title: executionScreenTitle, Component: Executions }),
     client.addSidebarHeaderItem({ id: "main", title: "It's a Plan", Component: ActivityItem }),
     client.addCommandCenterItem({ id: "view-executions", title: "View It's a Plan executions", icon: "Activity", keywords: ["sessions", "history", "delegation"], context: "global", onSelect: ({ openScreen }) => openScreen({ screenId: activityScreenId }) }),
-    client.addCommandCenterItem({ id: "configure", title: "Configure It's a Plan", icon: "Settings", keywords: ["connection", "credentials", "projects"], context: "global", onSelect: ({ openSettings }) => openSettings("connection") }),
+    client.addCommandCenterItem({ id: "configure", title: "Configure It's a Plan", icon: "Settings", keywords: ["connection", "credentials", "projects", "external agents"], context: "global", onSelect: ({ openSettings }) => openSettings("connection") }),
   ];
   return () => { for (const remove of cleanup.reverse()) remove(); };
 }

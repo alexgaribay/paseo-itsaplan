@@ -19,7 +19,7 @@ export function executionScreenTitle(params: PluginScreenParams): string {
   return { overview: "It's a Plan", attention: "Executions needing attention", history: "Execution history", requests: "Delegation requests", controls: "Runtime controls", session: "Execution details" }[executionPage(params.view)];
 }
 
-export function ExecutionsScreen({ openScreen, openSettings, ...props }: PluginScreenProps & { openScreen(input: PluginOpenScreenInput): void; openSettings(): void }) {
+export function ExecutionsScreen({ openScreen, openSettings, openAgents, ...props }: PluginScreenProps & { openScreen(input: PluginOpenScreenInput): void; openSettings(): void; openAgents(): void }) {
   const settings = useSettings(preferences);
   const action = useAction();
   const page = executionPage(props.params.view);
@@ -32,12 +32,12 @@ export function ExecutionsScreen({ openScreen, openSettings, ...props }: PluginS
     ...(next === "session" && sessionKey ? { sessionKey, from: page === "history" || page === "attention" ? page : parent } : {}),
   } });
   return <ScreenContent {...props}>
-    {settings.status === "ready" && <BotSelector bots={settings.values.bots} botId={botId} onChange={(next) => openScreen({ screenId: activityScreenId, params: { botId: next } })} />}
+    {settings.status === "ready" && <BotSelector bots={settings.values.bots} botId={botId} onChange={(next) => openScreen({ screenId: activityScreenId, params: { botId: next } })} onManage={openAgents} />}
     {page === "overview" ? <View style={{ flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
       <ToolbarButton theme={props.theme} label="Open It's a Plan" icon="ExternalLink" disabled={!webUrl || action.pending} onPress={() => { void action.run(() => openExternalUrl(webUrl)); }} />
       <ToolbarButton theme={props.theme} label="Settings" icon="Settings" onPress={openSettings} />
     </View> : <BackLink theme={props.theme} label={parent === "history" ? "Execution history" : parent === "attention" ? "Needs attention" : "Overview"} onPress={() => navigate(parent)} />}
     <Feedback theme={props.theme} error={action.error} />
-    {settings.status === "loading" ? <Loading /> : settings.status !== "ready" ? <SettingsSection title="Configuration unavailable"><Feedback theme={props.theme} error={settings.error} /></SettingsSection> : !Object.hasOwn(settings.values.bots, botId) ? <SettingsSection title="Bot unavailable"><Feedback theme={props.theme} error="This bot is no longer registered. Select a configured bot to view its executions." /></SettingsSection> : <BotScope botId={botId}><Sessions key={botId} {...props} serverUrl={settings.values.serverUrl} webUrl={webUrl} continuationEnabled={settings.values.continuation?.enabled || false} page={page} sessionKey={props.params.sessionKey} onNavigate={navigate} /></BotScope>}
+    {settings.status === "loading" ? <Loading /> : settings.status !== "ready" ? <SettingsSection title="Configuration unavailable"><Feedback theme={props.theme} error={settings.error} /></SettingsSection> : !Object.hasOwn(settings.values.bots, botId) ? <SettingsSection title="Agent unavailable"><Feedback theme={props.theme} error="This external agent is no longer registered. Select a configured agent to view its executions." /></SettingsSection> : <BotScope botId={botId}><Sessions key={botId} {...props} serverUrl={settings.values.serverUrl} webUrl={webUrl} continuationEnabled={settings.values.continuation?.enabled || false} page={page} sessionKey={props.params.sessionKey} onNavigate={navigate} /></BotScope>}
   </ScreenContent>;
 }
