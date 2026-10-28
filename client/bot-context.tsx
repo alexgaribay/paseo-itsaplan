@@ -9,9 +9,14 @@ export function BotScope({ botId, children }: { botId: string; children: ReactNo
   return <BotContext.Provider value={botId}>{children}</BotContext.Provider>;
 }
 
-export function useBotRpc<Input extends z.ZodType, Output extends z.ZodType>(contract: PluginRpcContract<Input, Output>) {
-  const invoke = useRpc(contract);
+export function useBotId(): string {
   const botId = useContext(BotContext);
   if (!botId) throw new Error("Select a bot before calling the integration.");
+  return botId;
+}
+
+export function useBotRpc<Input extends z.ZodType, Output extends z.ZodType>(contract: PluginRpcContract<Input, Output>) {
+  const invoke = useRpc(contract);
+  const botId = useBotId();
   return useCallback((input: z.input<Input>): Promise<z.output<Output>> => invoke(Object.assign({}, input, { botId })), [invoke, botId]);
 }

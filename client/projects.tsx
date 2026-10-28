@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePaseo, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { useBotRpc as useRpc } from "./bot-context";
+import { BotScope, useBotId, useBotRpc as useRpc } from "./bot-context";
 import { Icon, Modal, SettingsAction, SettingsCard, SettingsInput, SettingsSection, SettingsSelect, SettingsSwitch, type SettingsInputHandle } from "@getpaseo/plugin/client/ui";
 import { projectMappingSchema, type Config, type ProjectMapping, type Selection } from "../shared/config";
 import type { Readiness } from "../shared/experience";
@@ -29,6 +29,7 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
   onClose(): void;
   disabled: boolean;
 }) {
+  const botId = useBotId();
   const [mapping, setMapping] = useState<ProjectMapping>(() => initial || projectMappingSchema.parse({}));
   const set = (patch: Partial<ProjectMapping>) => setMapping((current) => ({ ...current, ...patch }));
   const [fieldValidation, setFieldValidation] = useState<{ bindings: ProjectMapping["fieldBindings"]; error?: string }>();
@@ -36,6 +37,8 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
   const fieldError = mapping.fieldBindings?.length ? fieldValidation?.bindings !== mapping.fieldBindings ? "Validating saved field bindings…" : fieldValidation?.error : undefined;
   const matchedPath = match?.status === "matched" ? match.candidate.repository : "";
   const paseo = usePaseo();
+  const loadProjects = useCallback(() => paseo.projects.list(), [paseo]);
+  const localProjects = useResource(loadProjects);
   const loadWorkspaces = useCallback(() => paseo.workspaces.list(), [paseo]);
   const workspaces = useResource(loadWorkspaces);
   const discover = useRpc(providersRpc);
@@ -48,14 +51,28 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
   const options = [{ value: "", label: "No workspace override" }, ...workspaceChoices.map(({ value, label }) => ({ value, label }))];
   if (mapping.workspaceId && !workspaceChoices.some((workspace) => workspace.value === mapping.workspaceId)) options.push({ value: mapping.workspaceId, label: `Saved workspace (${mapping.workspaceId})` });
   options.push({ value: "__manual__", label: "Enter workspace ID…" });
+  const projectChoices = localProjects.data?.projects || [];
+  const selectedProject = mapping.repository ? projectChoices.find((project) => project.projectRootPath === mapping.repository) : undefined;
+  const projectOptions = [
+    { value: "", label: "Automatic repository match" },
+    ...projectChoices.map((project) => ({ value: project.projectRootPath, label: `${project.projectKind === "git" ? "" : "Not Git · "}${project.projectDisplayName} · ${project.projectRootPath}` })),
+  ];
+  if (mapping.repository && !selectedProject) projectOptions.push({ value: mapping.repository, label: `Custom override · ${mapping.repository}` });
   const validation = projectMappingSchema.safeParse(mapping);
   const absolute = !mapping.repository || mapping.repository.startsWith("/") || /^[A-Za-z]:[\\/]/.test(mapping.repository);
-  const error = !absolute ? "Enter an absolute Git repository path." : manualWorkspace && !mapping.workspaceId ? "Enter a workspace ID or choose No workspace override." : !validation.success ? validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n") : undefined;
+  const error = !absolute ? "Enter an absolute Git repository path." : selectedProject && selectedProject.projectKind !== "git" ? "This Paseo project is not a Git checkout. Choose a Git project for execution." : manualWorkspace && !mapping.workspaceId ? "Enter a workspace ID or choose No workspace override." : !validation.success ? validation.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n") : undefined;
   return <Modal title={title} icon={<Icon name="FolderGit2" size={18} color={props.theme.colors.foreground} />} open onOpenChange={(open) => { if (!open) onClose(); }}>
     <Modal.Content>
-      <SettingsSection title="Repository" info="Linked repositories are matched to registered Git projects on this host. Leave the override blank to use a unique match. A workspace selection sets an explicit override. Overrides can be saved without a currently resolvable repository; readiness and execution fail closed until one resolves." trailing={<RefreshButton theme={props.theme} label="Refresh workspaces" disabled={disabled || workspaces.loading} onPress={workspaces.refresh} />}>
+      <SettingsSection title="Repository" info="Choose a project registered on this Paseo host, including projects without an active workspace. Automatic repository matching is the default. A project or workspace selection sets an explicit override; execution requires a valid Git checkout." trailing={<RefreshButton theme={props.theme} label="Refresh Paseo projects" disabled={disabled || localProjects.loading || workspaces.loading} onPress={() => { localProjects.refresh(); workspaces.refresh(); }} />}>
         <SettingsCard>
-          <SettingsSelect label="Workspace" value={manualWorkspace ? "__manual__" : mapping.workspaceId} options={options} disabled={disabled} onValueChange={(workspaceId) => {
+          <SettingsSelect label="Paseo project" value={mapping.repository} options={projectOptions} disabled={disabled || localProjects.loading} onValueChange={(repository) => {
+            repositoryInput.current?.replaceText(repository);
+            setManualWorkspace(false);
+            const project = projectChoices.find((item) => item.projectRootPath === repository);
+            setDiscoveryCwd(project && project.projectKind !== "git" ? "" : repository || matchedPath);
+            set({ repository, workspaceId: "" });
+          }} />
+          <SettingsSelect label="Workspace override" value={manualWorkspace ? "__manual__" : mapping.workspaceId} options={options} disabled={disabled} onValueChange={(workspaceId) => {
             if (workspaceId === "__manual__") { setManualWorkspace(true); return; }
             setManualWorkspace(false);
             const workspace = workspaceChoices.find((item) => item.value === workspaceId);
@@ -64,11 +81,12 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
           }} />
           {manualWorkspace && <SettingsInput label="Workspace ID" initialValue={mapping.workspaceId} disabled={disabled} onChangeText={(workspaceId) => set({ workspaceId: workspaceId.trim() })} />}
           {match?.status === "ambiguous" && <SettingsSelect label="Matching checkout" value={mapping.repository} options={[{ value: "", label: "Choose a checkout" }, ...match.candidates.map((candidate) => ({ value: candidate.repository, label: `${candidate.name} · ${candidate.repository}` })), ...(mapping.repository && !match.candidates.some((candidate) => candidate.repository === mapping.repository) ? [{ value: mapping.repository, label: "Custom override" }] : [])]} disabled={disabled} onValueChange={(repository) => { repositoryInput.current?.replaceText(repository); setManualWorkspace(false); setDiscoveryCwd(repository); set({ repository, workspaceId: "" }); }} />}
-          <SettingsInput ref={repositoryInput} label="Repository override" placeholder={matchedPath || "Match linked repository"} initialValue={mapping.repository} disabled={disabled} onChangeText={(repository) => set({ repository })} />
+          <SettingsInput ref={repositoryInput} label="Repository override" placeholder={matchedPath || "Match linked repository"} initialValue={mapping.repository} disabled={disabled} onChangeText={(repository) => { setManualWorkspace(false); set({ repository, workspaceId: "" }); }} />
           <SettingsSwitch label="Automatic execution" hint="On by default. Requires global automatic delegation. Turning this off is the explicit opt-out and does not exclude the project from global claims." value={mapping.automatic} disabled={disabled} onValueChange={(automatic) => set({ automatic })} />
           <SettingsSwitch label="Isolated worktree" value={mapping.worktree} disabled={disabled} onValueChange={(worktree) => set({ worktree })} />
           {mapping.worktree && <SettingsInput label="Base branch" placeholder="Repository default" initialValue={mapping.baseBranch} disabled={disabled} onChangeText={(baseBranch) => set({ baseBranch: baseBranch.trim() })} />}
         </SettingsCard>
+        <Feedback theme={props.theme} error={localProjects.error} message={localProjects.loading ? "Loading Paseo projects…" : !localProjects.error && !projectChoices.length ? "No Paseo projects are registered on this host. Add a Git project in Paseo or use a repository override." : undefined} />
         <Feedback theme={props.theme} error={workspaces.error} />
         {!mapping.repository && match && match.status !== "matched" && <Feedback theme={props.theme} message={match.status === "ambiguous" ? "Multiple checkouts match. Choose a repository override." : match.reason} />}
       </SettingsSection>
@@ -80,7 +98,7 @@ function ProjectEditor({ projectId, title, initial, match, config, onApply, onRe
       <SettingsSection title="Issue status transitions" info="Optional destination column IDs for this project's milestones. Blank fields inherit global policies. Transitions require explicit evidence; a finished agent turn never completes an issue.">
         <SettingsCard><PolicyFields value={mapping.statusPolicy || {}} onChange={(statusPolicy) => set({ statusPolicy })} disabled={disabled} inherit /></SettingsCard>
       </SettingsSection>
-      <ContextSettings {...props} projectId={projectId} mapping={mapping} onChange={set} providers={catalog.data || []} disabled={disabled} onValidationChange={onFieldValidation} />
+      <BotScope botId={botId}><ContextSettings {...props} projectId={projectId} mapping={mapping} onChange={set} providers={catalog.data || []} disabled={disabled} onValidationChange={onFieldValidation} /></BotScope>
       <SettingsCard>
         <SettingsAction label="Project settings" hint="Updates the settings draft." actionLabel="Apply" disabled={disabled || !!error || !!fieldError} onPress={() => { if (!error && !fieldError) onApply(mapping); }} />
         {initial && <SettingsAction label="Project configuration" hint="Repository files, sessions, and worktrees are kept. Saved overrides are deleted and settings return to defaults, which re-enable automatic execution." actionLabel="Remove" disabled={disabled} onPress={onRemove} />}
