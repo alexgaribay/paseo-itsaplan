@@ -76,6 +76,8 @@ Discovery reads `GET /projects/:qualifiedRef/settings/git/connections`, not the 
 
 Matching compares full forge host, repository path and ports from structured metadata with local Git remotes. Standard HTTPS/SSH/scp forms normalize together; path case is preserved. Plain HTTP matches only HTTP. Custom ports do not imply equivalence across transports. Worktrees/symlinks sharing a Git common directory count once; separate clones remain ambiguous. Encoded/non-ASCII paths, IPv6 remote authorities and unsupported remote schemes require an explicit override. No directory scan, clone, remote fetch or project-name guess occurs. An unreadable registered checkout fails discovery closed rather than proving a match from an incomplete catalog.
 
+For an explicit override, open the It's a Plan project's editor and choose **Paseo project**. The dropdown lists all projects registered on the selected Paseo host, including projects without workspaces. Selecting a Git project fills its checkout path and clears a previous workspace override; **Apply → Save changes** persists the selection. Non-Git projects are visible and labeled, but cannot be applied for execution. Choose **Automatic repository match** to clear the explicit checkout/workspace override. Existing workspace and custom-path controls remain available.
+
 Configure:
 
 - Shared provider/model/mode defaults and project overrides for bots without named profiles, using Paseo's discovered catalog. No runtime list of provider names is hardcoded.

@@ -2,6 +2,7 @@
 
 ## 0.0.1
 
+- Select repository overrides from all projects registered on the owning Paseo host, including projects without workspaces. Preserve custom paths and workspace overrides, label non-Git choices and keep automatic matching as the default. Preserve selected-bot context inside compact project-editor sheets.
 - Make project execution opt-out: newly authorized and unsaved projects inherit execution defaults and automatic repository matching without per-project enablement. Preserve explicit project opt-outs, global/bot controls, repository safety checks and pinned recovery/chat routing. Align readiness, request delivery and settings with the enabled default.
 - Run multiple external bots on one Paseo host with shared connection/project/policy settings, separate execution keys, and named local Paseo agent-profile bindings.
 - Add bot-scoped settings/execution selection and RPC inputs. Preserve legacy default-bot state, isolate private journals and pause controls, and reject duplicate execution keys and detected account collisions.

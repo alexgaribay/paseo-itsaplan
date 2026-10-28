@@ -315,3 +315,13 @@ The final suite includes absent/inherited project execution, explicit opt-outs, 
 The implementation owner's loopback HTTP smoke reported successful default-enabled unsaved-project execution, explicit-off rejection and unresolved-repository rejection. This was an isolated native gateway fixture, not a live provider execution. The default-on project editor and chat picker were not visually re-exercised. No live daemon reload, local settings write or upstream task creation was performed for the commit/push checks.
 
 The package dry run reported `paseo-itsaplan@0.0.1` and included all 87 release files. No package archive was created by the dry run.
+
+## Registered Paseo project selector — 2026-10-28
+
+The plugin-only project selector and compact-editor context fix are merged into `main`. The repository-API protocol cutover and companion It's a Plan server change remain in their isolated worktrees; this merge adds no new server requirement.
+
+The combined main source passed both TypeScript configurations and **604 tests, 0 failures, 1982 assertions across 25 files**.
+
+Before merge, the actual Paseo 0.13.2 UI was exercised on an isolated loopback daemon with two registered Git projects and one non-Git project, all without workspaces. The dropdown listed all three. Git selection populated the repository override, Apply/Save survived browser reload, non-Git selection blocked Apply, and automatic matching cleared the checkout/workspace override in the draft. Desktop and 390×844 compact screenshots were inspected; compact Configure was reproduced failing before the selected-bot context fix and working afterward.
+
+No live plugin reload, installation command, task claim or production settings/credential write was performed for this merge. Existing external-agent setup edits were preserved outside the selector commits.
