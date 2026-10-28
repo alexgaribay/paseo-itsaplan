@@ -377,6 +377,14 @@ Each successful scenario recorded two commit-bound verification receipts. Coding
 
 The actual plugin UI rendered Automatic mode with main/origin defaults and accepted a JSON argv check into its draft on the isolated host. Browser reload/save persistence was not established; project overrides and selected-execution receipt presentation were not interactively verified. No full visual/mobile acceptance or live provider/forge run is claimed.
 
-This worktree has not been merged, installed or reloaded into the user's live Paseo. No live settings, credentials, bot registration or global Paseo defaults were changed.
+At the end of isolated verification, the feature had not been merged or installed. That pass changed no live settings, credentials, bot registration or global Paseo defaults; the later user-requested activation is recorded below.
 
 The `0.0.1` package dry run passed with **94 files**, including the new workflow modules. Closed the owned browser, stopped the isolated daemon gracefully, removed its entire temporary home/repositories and deleted the throwaway smoke program. Removal of the temporary home was confirmed. No package archive was created by the dry run.
+
+### Main merge and live plugin activation
+
+On the user's request, committed the verified feature as `fbad7ae` and fast-forwarded local `main`. The existing directory installation points at `/Users/alex/Development/paseo-itsaplan`, so reloaded only `itsaplan` rather than installing a duplicate or restarting Paseo.
+
+Paused both bots' new claims and confirmed **zero active executions, zero reservations and no pending configuration** before reload. After reload, the served native client bundle contained the automatic lifecycle controls, both external-agent authentication checks succeeded, and session/request associations were unchanged: **Dev bot 21 sessions / 6 requests; UI Bot 1 session / 0 requests**. Saved settings and credential-file hashes matched byte-for-byte.
+
+Restored both bots' original unpaused states. Final native RPC checks observed **connected, claiming true, paused false, zero active executions and no pending configuration** for each bot; each had one ordinary in-flight poll reservation. No live task was submitted as a test. No global Paseo agent defaults, other plugins or provider configuration were changed. This activation did not repeat the earlier 673-test suite or isolated lifecycle smoke; the fast-forward installed that exact verified implementation.
