@@ -1,8 +1,12 @@
 # Verification
 
 ## Source/API verification
+Paseo 0.14.0 upgrade: both TypeScript configurations passed and `npm test` passed 673 tests across 28 files (2,326 assertions) against the 0.14.0 packages. The installed protocol's compatibility check accepted 0.14.0 and 0.14.1 and rejected 0.13.2 and 0.15.0 with the updated manifest. No live 0.14 daemon or provider session was exercised.
 
-Reviewed current repositories and installed SDK before implementation. Versions/revisions and exact adapted files are in [README.md](README.md) and [THIRD_PARTY.md](THIRD_PARTY.md). Generated the initial scaffold with the installed `paseo plugin init`. TypeScript imports use the installed 0.13.0 definitions, including current lifecycle, settings/RPC, provider catalogs, workspace/agent creation, navigation and session-scoped MCP configuration. No language server was configured in this workspace; installed declarations and runtime calls supplied the signature evidence.
+After the session-open integration, `npm test` passed 675 tests across 28 files (2,337 assertions), and both TypeScript configurations passed. The engine check covers persisting launch identity before delegated and manual agent creation without journaling the token. A disposable local registry smoke exercised the actual session-open resolver with a journaled agent and private credential: the matching open received MCP, while a cleared credential and a different agent did not. No live 0.14 provider session was exercised.
+
+
+The original implementation was reviewed against the then-installed 0.13.0 SDK. Versions/revisions and exact adapted files are in [README.md](README.md) and [THIRD_PARTY.md](THIRD_PARTY.md). The initial scaffold was generated with `paseo plugin init`. The review covered lifecycle, settings/RPC, provider catalogs, workspace/agent creation, navigation and session-scoped MCP configuration. No language server was configured in that workspace; installed declarations and runtime calls supplied the signature evidence.
 
 Specific protocol checks against current runner **and server** source:
 

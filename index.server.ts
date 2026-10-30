@@ -15,6 +15,7 @@ import { diagnostics } from "./server/diagnostics";
 import { markExecutionReviewed, reviewExecution } from "./server/review";
 import { prepareTicketReport, reconcileTicketReport, submitTicketReport } from "./server/ticket-report";
 import { selectedExecutionContext } from "./server/selected-context";
+import { sessionMcp } from "./server/session-mcp";
 
 async function guarded<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
@@ -28,6 +29,7 @@ export default function contribute(server: PluginServerContext) {
     if (state.status === "ready") return bots.configure(state.values);
   });
   const unsubscribeTurns = server.on("agent.turn_ended", (event) => guarded(() => bots.turnEnded(event.agent.id, event.outcome)));
+  const unsubscribeMcp = server.before("agent.session_open", ({ request }) => sessionMcp(request, (agentId, key, provider) => bots.sessionMcp(agentId, key, provider)));
   void bots.initialize().catch(() => {});
   const experience = async (paseo: PaseoApi, botId?: string): Promise<ExperienceContext> => (await bots.service(botId)).experience(paseo);
 
@@ -132,6 +134,7 @@ export default function contribute(server: PluginServerContext) {
   return async () => {
     unsubscribeSettings();
     unsubscribeTurns();
+    unsubscribeMcp();
     await bots.close();
   };
 }

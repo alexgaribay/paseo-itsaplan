@@ -129,6 +129,21 @@ export class BotRegistry {
     return this.select(id);
   }
 
+  async sessionMcp(agentId: string, key: string, provider: string): Promise<{ type: "http"; url: string; headers: { Authorization: string } } | undefined> {
+    if (!this.config) await this.initialize();
+    const config = this.config?.mcp;
+    if (!config?.enabled || !config.url || !config.providers.includes(provider)) return;
+    const matches = [...this.entries.values()].filter(({ service }) => {
+      const record = service.storage.get(key);
+      return record?.agentId === agentId && record.mcpLaunch?.provider === provider && record.mcpLaunch.url === config.url;
+    });
+    if (matches.length !== 1) return;
+    const token = (await matches[0]!.service.storage.secrets()).mcpToken;
+    if (this.config?.mcp !== config) return;
+    if (!token) return;
+    return { type: "http", url: config.url, headers: { Authorization: `Bearer ${token}` } };
+  }
+
   private async checkKeys(patch?: { id: string; secrets: Secrets }): Promise<void> {
     const owners = new Map<string, string>();
     const root = await this.root.secrets();

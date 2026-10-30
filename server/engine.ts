@@ -598,6 +598,9 @@ export class Engine {
         const known = record.agentId !== agentIdFor(key) ? await this.gateway.inspect(record.agentId) : null;
         if (record.agentId !== agentIdFor(key) && (!known || !compatibleSession(known, selection, binding?.agentId === known.id ? boundRecord?.plan?.selection : undefined))) throw new ExecutionStop("Mapped Paseo session selection changed before reuse");
         if (!known && !record.branchName) await persist({ branchName: issueBranchName(key, resumed ? null : issue?.identifier) });
+        if (!known && config.mcp.enabled && config.mcp.url && config.mcp.providers.includes(selection.provider) && secrets.mcpToken) {
+          await persist({ mcpLaunch: { url: config.mcp.url, provider: selection.provider } });
+        }
         const session = known ?? await this.gateway.create({ key, agentId: record.agentId, title: issue?.identifier ?? (task.kind === "run" ? `It's a Plan ${task.run.trigger} run ${externalId}` : `It's a Plan chat ${externalId}`), project, selection,
           systemPrompt: nativeSystemPrompt(task.kind === "run" ? task.run.systemPrompt : task.message.systemPrompt), config, mcpToken: secrets.mcpToken, issueId: issue?.id ?? null, branchName: record.branchName });
         sessionOwned = !known;
@@ -925,7 +928,7 @@ export class Engine {
         stop.signal.throwIfAborted();
         const now = Date.now();
         const taskContext = project.taskContext?.enabled ? await this.journal.cacheTaskContext(await this.protocol.context(issue, project, stop.signal)) : undefined;
-        record = { key, kind: "manual", serverUrl: config.serverUrl, externalId: 0, attempt: 0, issueId: issue.id, issueIdentifier: issue.identifier, projectId, projectMapping: project, plan, taskIssue: issue, taskContext, branchName: issueBranchName(key, issue.identifier), agentId: agentIdFor(key), workspaceId: null, cwd: "", provider: selection.provider, phase: "preparing", createdAt: now, updatedAt: now, eventOffset: 0 };
+        record = { key, kind: "manual", serverUrl: config.serverUrl, externalId: 0, attempt: 0, issueId: issue.id, issueIdentifier: issue.identifier, projectId, projectMapping: project, plan, taskIssue: issue, taskContext, branchName: issueBranchName(key, issue.identifier), agentId: agentIdFor(key), workspaceId: null, cwd: "", provider: selection.provider, phase: "preparing", createdAt: now, updatedAt: now, eventOffset: 0, ...(config.mcp.enabled && config.mcp.url && config.mcp.providers.includes(selection.provider) && secrets.mcpToken ? { mcpLaunch: { url: config.mcp.url, provider: selection.provider } } : {}) };
         await this.journal.put(record);
         stop.signal.throwIfAborted();
         const session = await gateway.create({ key, agentId: record.agentId, title: issue.identifier, project, selection, systemPrompt: nativeSystemPrompt("Use the attached issue requirements and acceptance criteria. Report implementation, test, and review evidence separately. Do not mark the issue complete based on a coding turn."), config, mcpToken: secrets.mcpToken, issueId: issue.id, branchName: record.branchName });

@@ -445,17 +445,18 @@ export class PaseoGateway implements Gateway {
     }
     const useWorkspace = !!workspace && (!input.project.worktree || input.branchName !== undefined);
     const cwd = useWorkspace ? workspace!.directory! : source.root;
+    const mcp = await this.mcp(input, selection.provider);
     const agentConfig: PaseoAgentConfig = {
       provider: selection.model ? `${selection.provider}/${selection.model}` : selection.provider,
       ...(selection.modeId ? { modeId: selection.modeId } : {}),
       ...(selection.thinkingOptionId === undefined ? {} : { thinkingOptionId: selection.thinkingOptionId }),
       ...(selection.featureValues === undefined ? {} : { featureValues: selection.featureValues }),
       systemPrompt: `${input.systemPrompt}\n\n${safetyInstructions}`,
-      ...await this.mcp(input, selection.provider),
+      ...(mcp ? { toolPolicy: mcp.toolPolicy } : {}),
     };
     const options: PaseoAgentCreateOptions = {
       idempotencyKey: input.key, agentId: input.agentId, title: input.title, cwd,
-      config: agentConfig, labels: { "itsaplan.key": input.key, ...(input.issueId === null ? {} : { "itsaplan.issueId": String(input.issueId) }) },
+      config: agentConfig, labels: { "itsaplan.key": input.key, ...(mcp ? { "itsaplan.mcp-launch": "1" } : {}), ...(input.issueId === null ? {} : { "itsaplan.issueId": String(input.issueId) }) },
       ...(input.project.worktree && !useWorkspace ? { worktree: { mode: "branch-off", newBranch: branch, ...(input.project.baseBranch ? { base: input.project.baseBranch } : {}) } } : {}),
     };
     let handle: PaseoAgentHandle;
@@ -477,12 +478,11 @@ export class PaseoGateway implements Gateway {
     return validate(result.agent, selection, useWorkspace ? workspace!.id : undefined, input.project.worktree ? branch : undefined, false);
   }
 
-  private async mcp(input: CreateInput, provider: string): Promise<Pick<PaseoAgentConfig, "mcpServers" | "toolPolicy">> {
+  private async mcp(input: CreateInput, provider: string): Promise<Pick<PaseoAgentConfig, "toolPolicy"> | undefined> {
     const config = input.config.mcp;
-    if (!config.enabled || !config.providers.includes(provider) || !input.mcpToken || !config.url) return {};
+    if (!config.enabled || !config.providers.includes(provider) || !input.mcpToken || !config.url) return undefined;
     const parsedUrl = httpUrl.safeParse(config.url);
     if (!parsedUrl.success) throw new ConfigurationError("MCP URL must use HTTPS, or HTTP on loopback, without credentials");
-    const url = parsedUrl.data;
     let supported = false;
     try {
       const sessions = await this.paseo.agents.list();
@@ -492,10 +492,9 @@ export class PaseoGateway implements Gateway {
     } catch {
       // Unknown capability never makes optional MCP a prerequisite for execution.
     }
-    if (!supported) return {};
+    if (!supported) return undefined;
     if (config.preapprovedTools.some((tool) => !/^[A-Za-z0-9_.-]+$/.test(tool))) throw new ConfigurationError("MCP preapproved tools must be exact tool names");
     return {
-      mcpServers: { itsaplan: { type: "http", url, headers: { Authorization: `Bearer ${input.mcpToken}` } } },
       toolPolicy: { preapproved: config.preapprovedTools.map((tool) => ({ kind: "mcp", server: "itsaplan", tool })) },
     };
   }

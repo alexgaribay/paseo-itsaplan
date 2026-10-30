@@ -3,12 +3,14 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginSettings } from "@getpaseo/plugin/server";
+import type { PluginBeforeRequests } from "@getpaseo/plugin/server";
 import { configSchema, defaults, type Config } from "../shared/config";
 import type { SessionRecord } from "../shared/models";
 import type { Gateway, Secrets } from "./contracts";
 import { BotRegistry } from "./bots";
 import { atomicJson, PrivateStorage } from "./storage";
 import { taskKey } from "./engine";
+import { sessionMcp } from "./session-mcp";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -98,6 +100,34 @@ test("legacy root credentials and history remain the default while other bots ge
   await expect(value.registry.service("missing")).rejects.toThrow("Unknown bot");
   await expect(value.registry.credentials("missing", { apiKey: "wrong-key" })).rejects.toThrow("Unknown bot");
   expect((await first.storage.secrets()).apiKey).toBe("legacy-key");
+});
+
+test("session-open MCP is bound to its journaled agent and follows credential rotation", async () => {
+  const config = botsConfig();
+  config.mcp = { enabled: true, url: "https://plan.example.com/mcp", providers: ["omp"], preapprovedTools: [] };
+  const { registry } = await fixture(config);
+  const bot = await registry.service("second");
+  await bot.storage.put({ ...record("bot:second:manual:one", "agent-b"), mcpLaunch: { url: config.mcp.url, provider: "omp" } });
+  await registry.credentials("second", { mcpToken: "first-token" });
+  const request: PluginBeforeRequests["agent.session_open"] = {
+    agentId: "agent-b", workspaceId: "workspace", provider: "omp", cwd: "/repo",
+    reason: "create", purpose: "interactive", title: null,
+    labels: { "itsaplan.key": "bot:second:manual:one", "itsaplan.mcp-launch": "1" },
+    env: {}, tools: [], mcpServers: {},
+  };
+  const open = (input = request) => sessionMcp(input, (agentId, key, provider) => registry.sessionMcp(agentId, key, provider));
+  expect((await open())?.mcpServers.itsaplan).toEqual({ type: "http", url: config.mcp.url, headers: { Authorization: "Bearer first-token" } });
+  expect(await open({ ...request, agentId: "other-agent" })).toBeUndefined();
+  expect(await open({ ...request, provider: "other-provider" })).toBeUndefined();
+  expect(await open({ ...request, purpose: "history" })).toBeUndefined();
+  expect(await open({ ...request, labels: { "itsaplan.key": "bot:second:manual:one" } })).toBeUndefined();
+  await registry.credentials("second", { mcpToken: "rotated-token" });
+  expect((await open({ ...request, reason: "resume" }))?.mcpServers.itsaplan).toEqual({ type: "http", url: config.mcp.url, headers: { Authorization: "Bearer rotated-token" } });
+  await registry.credentials("second", { mcpToken: "" });
+  expect(await open({ ...request, reason: "refresh" })).toBeUndefined();
+  await registry.credentials("second", { mcpToken: "another-token" });
+  await registry.configure({ ...config, mcp: { ...config.mcp, url: "https://other.example/mcp" } });
+  expect(await open()).toBeUndefined();
 });
 
 test("shared snapshots overlay profiles and enable flags without duplicating project mappings", async () => {

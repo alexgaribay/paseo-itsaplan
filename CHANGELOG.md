@@ -2,6 +2,8 @@
 
 ## 0.0.1
 
+- Use Paseo 0.14 session-open MCP contributions for eligible new plugin-owned agents, matching the private journal and current settings before supplying the current credential. Keep preapprovals and provider capability checks; older saved MCP configurations remain unchanged.
+- Upgrade Paseo SDK dependencies and the manifest compatibility range to 0.14.x. Live 0.14 daemon/provider acceptance remains unverified.
 - Default new unrestricted issue delegations to a plugin-only automatic lifecycle: ready native pickup → In Progress → verified task commit → verified integration and ordinary target-branch push → bot-owned receipt → Done. Leave failures unfinished and preserve work; reconcile uncertain acknowledgments without blindly replaying writes.
 - Add global/project automatic-or-review policies, target/remote/check configuration, column discovery and durable finalization receipts. Preserve native permissions, hooks, signing, branch protection, existing task restrictions and captured recovery scope; do not change Paseo-wide defaults or require an upstream server change.
 - Select repository overrides from all projects registered on the owning Paseo host, including projects without workspaces. Preserve custom paths and workspace overrides, label non-Git choices and keep automatic matching as the default. Preserve selected-bot context inside compact project-editor sheets.

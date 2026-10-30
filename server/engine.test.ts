@@ -131,6 +131,25 @@ async function until(check: () => boolean) {
   expect(check()).toBe(true);
 }
 
+test("journals MCP launch identity before creating delegated and manual agents", async () => {
+  const mcp = { enabled: true, url: "https://plan.example/mcp", providers: ["codex"], preapprovedTools: [] };
+  const value = setup({ mcp });
+  value.engine.updateConfiguration(value.config, { mcpToken: "private-token" });
+  const create = value.coding.create.bind(value.coding);
+  const captured: SessionRecord[] = [];
+  value.coding.create = async (input) => {
+    captured.push(value.journal.get(input.key)!);
+    return create(input);
+  };
+  await value.engine.dispatch(value.task);
+  await value.engine.manual(await value.wire.api.issue(8), value.coding);
+  expect(captured.map((record) => record.mcpLaunch)).toEqual([
+    { url: mcp.url, provider: "codex" },
+    { url: mcp.url, provider: "codex" },
+  ]);
+  expect(JSON.stringify(captured)).not.toContain("private-token");
+});
+
 test("two bots executing the same upstream task create isolated native session identities", async () => {
   const first = setup({ botId: "alpha" });
   const second = setup({ botId: "beta" });

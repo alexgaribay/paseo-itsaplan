@@ -1,7 +1,7 @@
 // Protocol data adapted from @itsaplan/runner src/client.ts and src/agui.ts.
 // Copyright 2026 Andrii Poluosmak. Apache-2.0; revision in THIRD_PARTY.md.
 import { z } from "zod";
-import { projectMappingSchema } from "./config";
+import { httpUrl, projectMappingSchema } from "./config";
 import { acceptanceSchema, executionEvidenceSchema, executionObservationSchema, executionPlanSchema, taskIntentSchema } from "./experience";
 import { persistedTaskContextSchema } from "./task-context";
 import { taskProvenanceSchema, continuationGrantSchema } from "./continuation";
@@ -66,6 +66,7 @@ export const sessionSchema = z.object({
   pendingEvents: z.array(eventSchema).optional(),
   result: resultSchema.optional(), error: z.string().optional(), task: z.union([z.object({ kind: z.literal("run"), run: runSchema }), z.object({ kind: z.literal("chat"), message: chatSchema })]).optional(),
   projectMapping: projectMappingSchema.optional(),
+  mcpLaunch: z.object({ url: httpUrl, provider: z.string().min(1) }).optional(),
   model: z.string().nullable().optional(), modeId: z.string().nullable().optional(), pendingPermissionCount: z.number().int().nonnegative().optional(),
   lastHeartbeatAt: z.number().nullable().optional(), cancellation: z.enum(["requested", "confirmed", "unconfirmed"]).optional(),
   plan: executionPlanSchema.optional(), intent: taskIntentSchema.optional(), evidence: executionEvidenceSchema.optional(), acceptance: acceptanceSchema.optional(),

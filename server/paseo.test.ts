@@ -310,7 +310,7 @@ describe("repository and session creation", () => {
     expect((await gateway.inspect("agent-1"))?.archived).toBe(false);
   });
 
-  test("injects only opted-in HTTP MCP with exact preapprovals and its separate credential", async () => {
+  test("marks only opted-in supported sessions for launch-only MCP and keeps exact preapprovals", async () => {
     const { gateway, api, state, input } = fixture(false);
     api.agents.list = staticAgentList({ requestId: "sessions", entries: [{
       agent: state.agent,
@@ -318,11 +318,12 @@ describe("repository and session creation", () => {
     }], pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } });
     const config = { ...input.config, mcp: { enabled: true, url: "https://example.invalid/mcp", providers: ["alpha"], preapprovedTools: ["get_issue"] } };
     await gateway.create({ ...input, config, mcpToken: "separate-mcp-secret" });
-    expect(state.created[0].config.mcpServers).toEqual({ itsaplan: { type: "http", url: "https://example.invalid/mcp", headers: { Authorization: "Bearer separate-mcp-secret" } } });
+    expect(state.created[0].config.mcpServers).toBeUndefined();
+    expect(state.created[0].labels?.["itsaplan.mcp-launch"]).toBe("1");
     expect(state.created[0].config.toolPolicy).toEqual({ preapproved: [{ kind: "mcp", server: "itsaplan", tool: "get_issue" }] });
     state.exists = false;
     await gateway.create({ ...input, config: { ...config, mcp: { ...config.mcp, providers: [] } }, mcpToken: "separate-mcp-secret" });
-    expect(state.created[1].config.mcpServers).toBeUndefined();
+    expect(state.created[1].labels?.["itsaplan.mcp-launch"]).toBeUndefined();
   });
 
   test("omits optional MCP when existing provider evidence says it is unsupported", async () => {
@@ -337,7 +338,7 @@ describe("repository and session creation", () => {
     const config = { ...input.config, mcp: { enabled: true, url: "https://example.invalid/mcp", providers: ["alpha"], preapprovedTools: [] } };
     const result = await gateway.create({ ...input, config, mcpToken: "separate-secret" });
     expect(result).toMatchObject({ id: "agent-1", provider: "alpha", archived: false });
-    expect(state.created[0].config.mcpServers).toBeUndefined();
+    expect(state.created[0].labels?.["itsaplan.mcp-launch"]).toBeUndefined();
   });
 });
 
